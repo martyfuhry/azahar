@@ -34,6 +34,7 @@
 #include "core/hle/kernel/ipc_debugger/recorder.h"
 #include "core/hle/kernel/kernel.h"
 #include "core/hle/kernel/process.h"
+#include "core/hle/kernel/shared_page.h"
 #include "core/hle/kernel/thread.h"
 #include "core/hle/service/apt/applet_manager.h"
 #include "core/hle/service/apt/apt.h"
@@ -200,6 +201,10 @@ System::ResultStatus System::RunLoop(bool tight_loop) {
         return ResultStatus::ErrorSavestate;
     }
 
+    if (clock_resync_requested.exchange(false)) {
+        kernel->GetSharedPageHandler().ResyncWithHostClock();
+    }
+
     // All cores should have executed the same amount of ticks. If this is not the case an event was
     // scheduled with a cycles_into_future smaller then the current downcount.
     // So we have to get those cores to the same global time first
@@ -307,6 +312,9 @@ System::ResultStatus System::SingleStep() {
 System::ResultStatus System::Load(Frontend::EmuWindow& emu_window, const std::string& filepath,
                                   Frontend::EmuWindow* secondary_window) {
     Settings::ResetTemporaryFrameLimit();
+    // A fresh boot samples the host clock itself; drop any resync left over from a previous
+    // session (e.g. an unpause that raced a stop).
+    clock_resync_requested = false;
     FileUtil::SetCurrentRomPath(filepath);
     if (early_app_loader) {
         app_loader = std::move(early_app_loader);
