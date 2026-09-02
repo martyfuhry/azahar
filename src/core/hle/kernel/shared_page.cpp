@@ -58,7 +58,8 @@ static std::chrono::milliseconds GetEmulatedTime(const Core::Timing& timing) {
     return std::chrono::duration_cast<std::chrono::milliseconds>(timing.GetGlobalTimeUs());
 }
 
-static std::chrono::seconds GetInitTime(u64 override_init_time) {
+/// The system clock at emulated time zero; a movie override takes precedence over the setting
+static std::chrono::seconds GetInitTime(const Core::Timing& timing, u64 override_init_time) {
     if (override_init_time != 0) {
         // Override the clock init time with the one in the movie
         return std::chrono::seconds(override_init_time);
@@ -66,7 +67,10 @@ static std::chrono::seconds GetInitTime(u64 override_init_time) {
 
     switch (Settings::values.init_clock.GetValue()) {
     case Settings::InitClock::SystemTime:
-        return std::chrono::duration_cast<std::chrono::seconds>(GetHostInitTime());
+        // Anchor so that init_time + emulated time == host time now. Emulated time is not zero
+        // here: at boot it holds the base ticks, after a savestate load the saved session's uptime
+        return std::chrono::duration_cast<std::chrono::seconds>(GetHostInitTime() -
+                                                                GetEmulatedTime(timing));
     case Settings::InitClock::FixedTime:
         return std::chrono::seconds(Settings::values.init_time.GetValue());
     default:
@@ -89,7 +93,7 @@ Handler::Handler(Core::Timing& timing, u64 override_init_time)
     shared_page.battery_state.is_adapter_connected.Assign(1);
     shared_page.battery_state.is_charging.Assign(1);
 
-    init_time = GetInitTime(override_init_time);
+    init_time = GetInitTime(timing, override_init_time);
     boot_init_time = init_time;
     boot_host_time = GetHostInitTime();
     boot_emulated_time = GetEmulatedTime(timing);

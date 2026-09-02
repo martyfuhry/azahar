@@ -91,6 +91,12 @@ static_assert(sizeof(SharedPageDef) == Memory::SHARED_PAGE_SIZE,
 
 class Handler : public BackingMem {
 public:
+    /**
+     * Constructed at boot and again when a savestate is loaded, after Core::Timing is restored.
+     * With InitClock::SystemTime the system clock is anchored so that it reads the host time at
+     * construction, whatever the emulated tick count is; a fixed clock starts at the configured
+     * time and a movie override is used as is, so both keep the clock a savestate was taken with.
+     */
     Handler(Core::Timing& timing, u64 override_init_time);
 
     void SetMacAddress(const MacAddress&);
