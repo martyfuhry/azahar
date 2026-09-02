@@ -1,4 +1,4 @@
-// Copyright 2015-2025 Citra Emulator Project / Azahar Emulator Project
+// Copyright 2015-2026 Citra Emulator Project / Azahar Emulator Project
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
@@ -127,11 +127,33 @@ public:
     /// Gets the system time in milliseconds since the year 1900.
     u64 GetSystemTimeSince1900() const;
 
+    /**
+     * Advances the system clock by the host time that passed while emulated time stood still and
+     * publishes a fresh DateTime reference, as PTM does when the console wakes from sleep.
+     * Emulated ticks stop while emulation is paused, so frontends request this on every resume
+     * (see Core::System::RequestClockResync).
+     *
+     * The correction is measured against the host and emulated time sampled at boot, so the clock
+     * never moves backwards: time gained by running ahead of the host (fast-forward) or by the
+     * host clock being set back absorbs later pauses instead. Only whole seconds are applied; the
+     * remainder is carried over to the next resync.
+     *
+     * Must be called on the emulation thread between RunLoop iterations. Does nothing when the
+     * clock is fixed or overridden by a movie.
+     * @return True if the clock was advanced.
+     */
+    bool ResyncWithHostClock();
+
 private:
     void UpdateTimeCallback(std::uintptr_t user_data, int cycles_late);
     Core::Timing& timing;
     Core::TimingEventType* update_time_event;
     std::chrono::seconds init_time;
+    u64 override_init_time{};
+    /// Sampled together at boot; ResyncWithHostClock() measures every correction against these
+    std::chrono::milliseconds boot_host_time{};
+    std::chrono::milliseconds boot_emulated_time{};
+    std::chrono::seconds boot_init_time{};
 
     SharedPageDef shared_page;
 
