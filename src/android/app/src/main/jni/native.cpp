@@ -840,6 +840,9 @@ jboolean JNICALL Java_org_citra_citra_1emu_utils_GpuDriverHelper_supportsCustomD
 // TODO(xperia64): ensure these cannot be called in an invalid state (e.g. after StopEmulation)
 void Java_org_citra_citra_1emu_NativeLibrary_unPauseEmulation([[maybe_unused]] JNIEnv* env,
                                                               [[maybe_unused]] jobject obj) {
+    // The emulated clock froze while paused (e.g. while the device slept); have the emulation
+    // thread re-anchor it to the host clock before it runs the next frame.
+    Core::System::GetInstance().RequestClockResync();
     pause_emulation = false;
     running_cv.notify_all();
     auto* handler = InputManager::NDKMotionHandler();
