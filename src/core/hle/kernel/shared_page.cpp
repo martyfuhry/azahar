@@ -1,4 +1,4 @@
-// Copyright 2015 Citra Emulator Project
+// Copyright 2015-2026 Citra Emulator Project / Azahar Emulator Project
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
@@ -8,6 +8,7 @@
 #include <boost/serialization/binary_object.hpp>
 #include "common/archives.h"
 #include "common/assert.h"
+#include "common/logging/log.h"
 #include "common/settings.h"
 #include "core/core.h"
 #include "core/core_timing.h"
@@ -31,6 +32,32 @@ template void load_construct_data<iarchive>(iarchive& ar, SharedPage::Handler* t
 
 namespace SharedPage {
 
+/// Samples the host clock the way a console booting under InitClock::SystemTime would,
+/// including the daylight-saving hour and the user's init_time_offset.
+static std::chrono::milliseconds GetHostInitTime() {
+    auto now = std::chrono::system_clock::now();
+    // If the system time is in daylight saving, we give an additional hour to console time
+    std::time_t now_time_t = std::chrono::system_clock::to_time_t(now);
+    std::tm* now_tm = std::localtime(&now_time_t);
+    if (now_tm && now_tm->tm_isdst > 0)
+        now = now + std::chrono::hours(1);
+
+    // add the offset
+    s64 init_time_offset = Settings::values.init_time_offset.GetValue();
+    long long days_offset = init_time_offset / 86400;
+    long long days_offset_in_seconds = days_offset * 86400; // h/m/s truncated
+    unsigned long long seconds_offset =
+        std::abs(init_time_offset) - std::abs(days_offset_in_seconds);
+
+    now = now + std::chrono::seconds(seconds_offset);
+    now = now + std::chrono::seconds(days_offset_in_seconds);
+    return std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch());
+}
+
+static std::chrono::milliseconds GetEmulatedTime(const Core::Timing& timing) {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(timing.GetGlobalTimeUs());
+}
+
 static std::chrono::seconds GetInitTime(u64 override_init_time) {
     if (override_init_time != 0) {
         // Override the clock init time with the one in the movie
@@ -38,25 +65,8 @@ static std::chrono::seconds GetInitTime(u64 override_init_time) {
     }
 
     switch (Settings::values.init_clock.GetValue()) {
-    case Settings::InitClock::SystemTime: {
-        auto now = std::chrono::system_clock::now();
-        // If the system time is in daylight saving, we give an additional hour to console time
-        std::time_t now_time_t = std::chrono::system_clock::to_time_t(now);
-        std::tm* now_tm = std::localtime(&now_time_t);
-        if (now_tm && now_tm->tm_isdst > 0)
-            now = now + std::chrono::hours(1);
-
-        // add the offset
-        s64 init_time_offset = Settings::values.init_time_offset.GetValue();
-        long long days_offset = init_time_offset / 86400;
-        long long days_offset_in_seconds = days_offset * 86400; // h/m/s truncated
-        unsigned long long seconds_offset =
-            std::abs(init_time_offset) - std::abs(days_offset_in_seconds);
-
-        now = now + std::chrono::seconds(seconds_offset);
-        now = now + std::chrono::seconds(days_offset_in_seconds);
-        return std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch());
-    }
+    case Settings::InitClock::SystemTime:
+        return std::chrono::duration_cast<std::chrono::seconds>(GetHostInitTime());
     case Settings::InitClock::FixedTime:
         return std::chrono::seconds(Settings::values.init_time.GetValue());
     default:
@@ -64,7 +74,8 @@ static std::chrono::seconds GetInitTime(u64 override_init_time) {
     }
 }
 
-Handler::Handler(Core::Timing& timing, u64 override_init_time) : timing(timing) {
+Handler::Handler(Core::Timing& timing, u64 override_init_time)
+    : timing(timing), override_init_time(override_init_time) {
     std::memset(&shared_page, 0, sizeof(shared_page));
 
     shared_page.running_hw = 0x1; // product
@@ -79,6 +90,9 @@ Handler::Handler(Core::Timing& timing, u64 override_init_time) : timing(timing) 
     shared_page.battery_state.is_charging.Assign(1);
 
     init_time = GetInitTime(override_init_time);
+    boot_init_time = init_time;
+    boot_host_time = GetHostInitTime();
+    boot_emulated_time = GetEmulatedTime(timing);
 
     using namespace std::placeholders;
     update_time_event = timing.RegisterEvent("SharedPage::UpdateTimeCallback",
@@ -123,6 +137,50 @@ u64 Handler::GetSystemTimeSince1900() const {
     // 3DS console time uses Jan 1 1900 as internal epoch,
     // so we use the milliseconds between 1900 and 2000 as base console time
     return 3155673600000ULL + GetSystemTimeSince2000();
+}
+
+bool Handler::ResyncWithHostClock() {
+    if (override_init_time != 0) {
+        // A movie is being recorded or played back: the clock must stay deterministic.
+        return false;
+    }
+    if (Settings::values.init_clock.GetValue() != Settings::InitClock::SystemTime) {
+        // Fixed clock: the user asked for a clock that is independent of the host.
+        return false;
+    }
+
+    // Emulated ticks stop while emulation is paused, so since boot the host clock has advanced by
+    // more than the emulated clock, by exactly the time the guest missed. Earlier resyncs have
+    // already added part of that to init_time; the rest is the deficit still to be applied.
+    const std::chrono::milliseconds host_elapsed = GetHostInitTime() - boot_host_time;
+    const std::chrono::milliseconds emulated_elapsed = GetEmulatedTime(timing) - boot_emulated_time;
+    const std::chrono::milliseconds applied = init_time - boot_init_time;
+    const std::chrono::milliseconds deficit = host_elapsed - emulated_elapsed - applied;
+    // Whole seconds only; the remainder stays in the deficit for the next resync.
+    const std::chrono::seconds missed = std::chrono::duration_cast<std::chrono::seconds>(deficit);
+
+    if (missed <= std::chrono::seconds{0}) {
+        // Nothing to catch up on: the guest is in step with or ahead of the host (fast-forward,
+        // or a host clock set backwards while paused). Real hardware never runs its clock
+        // backwards across a sleep, so neither do we.
+        LOG_DEBUG(Kernel, "Clock resync skipped: guest clock is {} ms ahead of the host",
+                  -deficit.count());
+        return false;
+    }
+
+    init_time += missed;
+
+    // Real hardware publishes a new DateTime reference after waking; games interpolate from the
+    // newest reference with the tick counter, so publish one now rather than waiting for the
+    // hourly update. Drop the pending hourly event first: UpdateTimeCallback re-arms it.
+    timing.RemoveEvent(update_time_event);
+    UpdateTimeCallback(0, 0);
+
+    LOG_INFO(Kernel,
+             "Clock resynced with host: guest clock advanced by {} s to cover time missed while "
+             "paused",
+             missed.count());
+    return true;
 }
 
 void Handler::UpdateTimeCallback(std::uintptr_t user_data, int cycles_late) {

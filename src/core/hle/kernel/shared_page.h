@@ -1,4 +1,4 @@
-// Copyright 2015-2025 Citra Emulator Project / Azahar Emulator Project
+// Copyright 2015-2026 Citra Emulator Project / Azahar Emulator Project
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
@@ -127,11 +127,39 @@ public:
     /// Gets the system time in milliseconds since the year 1900.
     u64 GetSystemTimeSince1900() const;
 
+    /**
+     * Advances the emulated system clock by the host time that passed while emulated time stood
+     * still, and immediately publishes a fresh DateTime reference in the shared page, mirroring
+     * what PTM does on real hardware when the console wakes from sleep. Emulated ticks do not
+     * advance while emulation is paused, so frontends request this (via
+     * Core::System::RequestClockResync) whenever emulation resumes.
+     *
+     * The correction is computed against host and emulated time sampled once at boot, so:
+     * - The guest clock never moves backwards.
+     * - Only whole seconds are applied; the sub-second remainder is carried over to the next
+     *   resync instead of being rounded away or applied twice.
+     * - Time the guest gained by running faster than real time (fast-forward) is reconciled
+     *   against later pauses rather than compounding on top of them.
+     * - A host clock set backwards during a pause is ignored until real time catches up.
+     *
+     * Must be called on the emulation thread between RunLoop iterations.
+     * No-op when init_clock is FixedTime or when a movie overrides the clock.
+     * @return True if the clock was advanced, false if there was nothing to catch up on or the
+     *         resync was skipped.
+     */
+    bool ResyncWithHostClock();
+
 private:
     void UpdateTimeCallback(std::uintptr_t user_data, int cycles_late);
     Core::Timing& timing;
     Core::TimingEventType* update_time_event;
     std::chrono::seconds init_time;
+    u64 override_init_time{};
+    /// Host time, emulated time and init_time sampled together at construction and never
+    /// modified afterwards; ResyncWithHostClock() measures every correction against them.
+    std::chrono::milliseconds boot_host_time{};
+    std::chrono::milliseconds boot_emulated_time{};
+    std::chrono::seconds boot_init_time{};
 
     SharedPageDef shared_page;
 
