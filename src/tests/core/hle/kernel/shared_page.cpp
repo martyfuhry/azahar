@@ -79,6 +79,16 @@ static void RequireUnchanged(Handler& handler, u32 counter_before, u64 guest_bef
     REQUIRE(handler.GetSystemTimeSince2000() == guest_before);
 }
 
+/// Signed difference in milliseconds between two system times
+static s64 MsBetween(u64 later, u64 earlier) {
+    return static_cast<s64>(later) - static_cast<s64>(earlier);
+}
+
+/// Gives a handler constructed on the restored timing the shared page of the saved session
+static void RestoreSavedPage(Handler& loaded, Handler& saved) {
+    loaded.GetSharedPage() = saved.GetSharedPage();
+}
+
 TEST_CASE("SharedPage::Handler::ResyncWithHostClock", "[core][kernel][shared_page]") {
     ScopedClockSettings restore_settings;
     Settings::values.init_clock = Settings::InitClock::SystemTime;
@@ -326,6 +336,154 @@ TEST_CASE("SharedPage::Handler::ResyncWithHostClock", "[core][kernel][shared_pag
         const u64 advanced_ms = handler.GetSystemTimeSince2000() - guest_before;
         REQUIRE(advanced_ms >= 1000);
         REQUIRE(advanced_ms <= 10000);
+    }
+}
+
+// Each handler truncates its anchor to a whole second, so two handlers constructed on the same
+// host time can read up to a second apart, plus the wall time that passes between them
+static constexpr s64 ANCHOR_TOLERANCE_MS = 2000;
+
+TEST_CASE("SharedPage::Handler clock anchoring", "[core][kernel][shared_page]") {
+    ScopedClockSettings restore_settings;
+    Settings::values.init_clock = Settings::InitClock::SystemTime;
+    Settings::values.init_time = FIXED_INIT_TIME;
+    Settings::values.init_time_offset = ONE_DAY;
+    Core::Timing timing(1, 100, /*override_base_ticks=*/0);
+
+    SECTION("boots on the host time regardless of the base ticks") {
+        Core::Timing large_base(1, 100, /*override_base_ticks=*/4'000'000'000);
+        REQUIRE(large_base.GetGlobalTimeUs() > std::chrono::seconds(10));
+
+        Handler from_zero(timing, 0);
+        Handler from_large(large_base, 0);
+        const s64 apart =
+            MsBetween(from_large.GetSystemTimeSince2000(), from_zero.GetSystemTimeSince2000());
+        REQUIRE(std::abs(apart) < ANCHOR_TOLERANCE_MS);
+    }
+
+    SECTION("reads the host time when constructed on a running timing") {
+        Handler saved(timing, 0);
+        EnterFirstSlice(timing);
+        const u64 boot = saved.GetSystemTimeSince2000();
+
+        // Three hours of play, then a savestate load in the same session
+        AdvanceTicks(timing, 3 * ONE_HOUR_CYCLES);
+        Handler loaded(timing, 0);
+        REQUIRE(std::abs(MsBetween(loaded.GetSystemTimeSince2000(), boot)) < ANCHOR_TOLERANCE_MS);
+        REQUIRE(MsBetween(saved.GetSystemTimeSince2000(), loaded.GetSystemTimeSince2000()) >
+                3 * ONE_HOUR * 1000 - ANCHOR_TOLERANCE_MS);
+    }
+
+    SECTION("reads the host time when constructed after the host clock moved on") {
+        Handler saved(timing, 0);
+        EnterFirstSlice(timing);
+        const u64 boot = saved.GetSystemTimeSince2000();
+
+        // Three hours of play, the application closed for fourteen hours, then a savestate load
+        AdvanceTicks(timing, 3 * ONE_HOUR_CYCLES);
+        AdvanceHostClock(14 * ONE_HOUR);
+        Handler loaded(timing, 0);
+        const s64 since_boot = MsBetween(loaded.GetSystemTimeSince2000(), boot);
+        REQUIRE(std::abs(since_boot - 14 * ONE_HOUR * 1000) < ANCHOR_TOLERANCE_MS);
+    }
+
+    SECTION("keeps the fixed clock of the saved session") {
+        Settings::values.init_clock = Settings::InitClock::FixedTime;
+        Handler saved(timing, 0);
+        EnterFirstSlice(timing);
+        AdvanceTicks(timing, 3 * ONE_HOUR_CYCLES);
+        AdvanceHostClock(14 * ONE_HOUR);
+
+        Handler loaded(timing, 0);
+        REQUIRE(loaded.GetSystemTimeSince2000() == saved.GetSystemTimeSince2000());
+    }
+
+    SECTION("keeps the movie clock of the saved session") {
+        Handler saved(timing, /*override_init_time=*/FIXED_INIT_TIME);
+        EnterFirstSlice(timing);
+        AdvanceTicks(timing, 3 * ONE_HOUR_CYCLES);
+        AdvanceHostClock(14 * ONE_HOUR);
+
+        Handler loaded(timing, /*override_init_time=*/FIXED_INIT_TIME);
+        REQUIRE(loaded.GetSystemTimeSince2000() == saved.GetSystemTimeSince2000());
+    }
+
+    SECTION("OnSavestateLoaded publishes once and re-arms the hourly update") {
+        Handler saved(timing, 0);
+        EnterFirstSlice(timing);
+        AdvanceTicks(timing, 30 * ONE_MINUTE_CYCLES);
+
+        // Unlike a real load, the constructor's immediate publish is queued here; it is removed
+        // together with the saved hourly update, so exactly one publish follows either way
+        Handler loaded(timing, 0);
+        RestoreSavedPage(loaded, saved);
+        auto& page = loaded.GetSharedPage();
+        const u32 counter_before = page.date_time_counter;
+        REQUIRE(counter_before == 1);
+
+        loaded.OnSavestateLoaded();
+        REQUIRE(page.date_time_counter == counter_before + 1);
+        const auto& published = SlotFor(page, counter_before);
+        REQUIRE(published.update_tick == static_cast<u64>(timing.GetTicks()));
+        REQUIRE(published.tick_to_second_coefficient == BASE_CLOCK_RATE_ARM11);
+        REQUIRE(published.date_time == loaded.GetSystemTimeSince1900());
+
+        // The saved hourly update was due in 30 minutes; only the re-armed one fires
+        AdvanceTicks(timing, 31 * ONE_MINUTE_CYCLES);
+        REQUIRE(page.date_time_counter == counter_before + 1);
+        AdvanceTicks(timing, 30 * ONE_MINUTE_CYCLES);
+        REQUIRE(page.date_time_counter == counter_before + 2);
+    }
+
+    SECTION("OnSavestateLoaded leaves a fixed clock alone") {
+        Settings::values.init_clock = Settings::InitClock::FixedTime;
+        Handler saved(timing, 0);
+        EnterFirstSlice(timing);
+        AdvanceTicks(timing, 30 * ONE_MINUTE_CYCLES);
+
+        Handler loaded(timing, 0);
+        RestoreSavedPage(loaded, saved);
+        const u32 counter_before = loaded.GetSharedPage().date_time_counter;
+        const u64 guest_before = loaded.GetSystemTimeSince2000();
+        loaded.OnSavestateLoaded();
+        RequireUnchanged(loaded, counter_before, guest_before);
+    }
+
+    SECTION("OnSavestateLoaded leaves a movie clock alone") {
+        Handler saved(timing, /*override_init_time=*/FIXED_INIT_TIME);
+        EnterFirstSlice(timing);
+        AdvanceTicks(timing, 30 * ONE_MINUTE_CYCLES);
+
+        Handler loaded(timing, /*override_init_time=*/FIXED_INIT_TIME);
+        RestoreSavedPage(loaded, saved);
+        const u32 counter_before = loaded.GetSharedPage().date_time_counter;
+        const u64 guest_before = loaded.GetSystemTimeSince2000();
+        loaded.OnSavestateLoaded();
+        RequireUnchanged(loaded, counter_before, guest_before);
+    }
+
+    SECTION("a resync right after construction is a no-op") {
+        Core::Timing large_base(1, 100, /*override_base_ticks=*/4'000'000'000);
+        Handler booted(large_base, 0);
+        REQUIRE_FALSE(booted.ResyncWithHostClock());
+
+        Handler saved(timing, 0);
+        EnterFirstSlice(timing);
+        AdvanceTicks(timing, 3 * ONE_HOUR_CYCLES);
+        AdvanceHostClock(14 * ONE_HOUR);
+
+        Handler loaded(timing, 0);
+        RestoreSavedPage(loaded, saved);
+        u32 counter_before = loaded.GetSharedPage().date_time_counter;
+        u64 guest_before = loaded.GetSystemTimeSince2000();
+        REQUIRE_FALSE(loaded.ResyncWithHostClock());
+        RequireUnchanged(loaded, counter_before, guest_before);
+
+        loaded.OnSavestateLoaded();
+        counter_before = loaded.GetSharedPage().date_time_counter;
+        guest_before = loaded.GetSystemTimeSince2000();
+        REQUIRE_FALSE(loaded.ResyncWithHostClock());
+        RequireUnchanged(loaded, counter_before, guest_before);
     }
 }
 
