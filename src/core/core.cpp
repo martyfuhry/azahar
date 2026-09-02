@@ -175,6 +175,9 @@ System::ResultStatus System::RunLoop(bool tight_loop) {
             status_details = e.what();
             return ResultStatus::ErrorSavestate;
         }
+        // The restored shared page still holds the time reference the game was reading when the
+        // state was saved; publish a fresh one now instead of waiting up to an hour for the next
+        kernel->GetSharedPageHandler().OnSavestateLoaded();
         frame_limiter.WaitOnce();
         return ResultStatus::Success;
     } else if (save_state_request_status == SaveStateStatus::SAVING && kernel.get() &&

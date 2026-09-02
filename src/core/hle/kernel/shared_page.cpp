@@ -170,18 +170,51 @@ bool Handler::ResyncWithHostClock() {
 
     init_time += missed;
 
-    // PTM publishes a new DateTime reference when the console wakes, so publish one now instead of
-    // waiting for the hourly update. UpdateTimeCallback re-arms the event removed here.
-    timing.RemoveEvent(update_time_event);
-    UpdateTimeCallback(0, 0);
+    // Publish a fresh DateTime reference now, as PTM does when the console wakes
+    PublishDateTime();
 
     LOG_INFO(Kernel, "Advanced system clock by {} s to resync with host", missed.count());
     return true;
 }
 
+void Handler::OnSavestateLoaded() {
+    if (override_init_time != 0 ||
+        Settings::values.init_clock.GetValue() != Settings::InitClock::SystemTime) {
+        // Fixed and movie clocks were restored exactly, so the saved reference is still right
+        return;
+    }
+
+    // The clock the game would still read from the saved reference, for the log only
+    const DateTime& saved = CurrentDateTime();
+    const u64 elapsed_ticks = timing.GetTicks() - saved.update_tick;
+    const u64 saved_ms = saved.date_time + elapsed_ticks * 1000 / BASE_CLOCK_RATE_ARM11;
+    const s64 delta_s = static_cast<s64>(GetSystemTimeSince1900() - saved_ms) / 1000;
+
+    PublishDateTime();
+
+    LOG_INFO(Kernel,
+             "Savestate loaded, system clock set to host time ({:+} s from the saved clock)",
+             delta_s);
+}
+
+void Handler::PublishDateTime() {
+    // UpdateTimeCallback re-arms the hourly event removed here
+    timing.RemoveEvent(update_time_event);
+    UpdateTimeCallback(0, 0);
+}
+
+// The DateTime reference is double-buffered: the low bit of date_time_counter says which slot the
+// game reads, the OS writes the other one and then bumps the counter
+const DateTime& Handler::CurrentDateTime() const {
+    return shared_page.date_time_counter % 2 ? shared_page.date_time_1 : shared_page.date_time_0;
+}
+
+DateTime& Handler::NextDateTime() {
+    return shared_page.date_time_counter % 2 ? shared_page.date_time_0 : shared_page.date_time_1;
+}
+
 void Handler::UpdateTimeCallback(std::uintptr_t user_data, int cycles_late) {
-    DateTime& date_time =
-        shared_page.date_time_counter % 2 ? shared_page.date_time_0 : shared_page.date_time_1;
+    DateTime& date_time = NextDateTime();
 
     date_time.date_time = GetSystemTimeSince1900();
     date_time.update_tick = timing.GetTicks();
