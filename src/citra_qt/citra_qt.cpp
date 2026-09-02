@@ -2603,6 +2603,10 @@ void GMainWindow::OnResumeGame(bool first_start) {
 
     PreventOSSleep();
 
+    if (!first_start) {
+        // The emulated clock froze while paused; re-anchor it to the host clock on resume.
+        system.RequestClockResync();
+    }
     emu_thread->SetRunning(true);
     system.frame_limiter.SetFrameAdvancing(false);
     graphics_api_button->setEnabled(false);
