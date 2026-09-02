@@ -175,6 +175,8 @@ System::ResultStatus System::RunLoop(bool tight_loop) {
             status_details = e.what();
             return ResultStatus::ErrorSavestate;
         }
+        // The event queue is unlocked again and the shared page handler has been reconstructed
+        kernel->GetSharedPageHandler().OnSavestateLoaded();
         frame_limiter.WaitOnce();
         return ResultStatus::Success;
     } else if (save_state_request_status == SaveStateStatus::SAVING && kernel.get() &&

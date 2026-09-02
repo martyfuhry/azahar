@@ -170,12 +170,40 @@ bool Handler::ResyncWithHostClock() {
     init_time += missed;
 
     // PTM publishes a new DateTime reference when the console wakes, so publish one now instead of
-    // waiting for the hourly update. UpdateTimeCallback re-arms the event removed here.
-    timing.RemoveEvent(update_time_event);
-    UpdateTimeCallback(0, 0);
+    // waiting for the hourly update
+    PublishDateTime();
 
     LOG_INFO(Kernel, "Advanced system clock by {} s to resync with host", missed.count());
     return true;
+}
+
+void Handler::OnSavestateLoaded() {
+    if (override_init_time != 0 ||
+        Settings::values.init_clock.GetValue() != Settings::InitClock::SystemTime) {
+        // Fixed and movie clocks were restored exactly, so the saved reference is still right
+        return;
+    }
+
+    // The clock the guest would keep reading from the saved reference, for the log only.
+    // UpdateTimeCallback increments the counter after writing, so an odd counter means slot 1
+    const DateTime& saved =
+        shared_page.date_time_counter % 2 ? shared_page.date_time_1 : shared_page.date_time_0;
+    const s64 saved_ms =
+        static_cast<s64>(saved.date_time) +
+        static_cast<s64>(timing.GetTicks() - saved.update_tick) * 1000 / BASE_CLOCK_RATE_ARM11;
+    const s64 delta_s = (static_cast<s64>(GetSystemTimeSince1900()) - saved_ms) / 1000;
+
+    PublishDateTime();
+
+    LOG_INFO(Kernel,
+             "Savestate loaded, system clock set to host time ({:+} s from the saved clock)",
+             delta_s);
+}
+
+void Handler::PublishDateTime() {
+    // UpdateTimeCallback re-arms the hourly event removed here
+    timing.RemoveEvent(update_time_event);
+    UpdateTimeCallback(0, 0);
 }
 
 void Handler::UpdateTimeCallback(std::uintptr_t user_data, int cycles_late) {

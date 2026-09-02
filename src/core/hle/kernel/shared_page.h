@@ -150,8 +150,22 @@ public:
      */
     bool ResyncWithHostClock();
 
+    /**
+     * Publishes a fresh DateTime reference after a savestate has been loaded. The constructor
+     * anchored the system clock to the host time, but the restored shared page still holds the
+     * reference the saved session was reading, and the constructor's own publish is dropped while
+     * the event queue is locked for deserialization; without this the guest would keep reading the
+     * saved clock until the hourly update.
+     *
+     * Must be called on the emulation thread once the load has completed. Does nothing when the
+     * clock is fixed or overridden by a movie, since those are restored exactly.
+     */
+    void OnSavestateLoaded();
+
 private:
     void UpdateTimeCallback(std::uintptr_t user_data, int cycles_late);
+    /// Replaces the pending hourly update with an immediate DateTime publish
+    void PublishDateTime();
     Core::Timing& timing;
     Core::TimingEventType* update_time_event;
     std::chrono::seconds init_time;
