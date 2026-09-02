@@ -155,6 +155,16 @@ public:
     }
 
     /**
+     * Request that the system clock be resynced with the host clock on the next RunLoop
+     * iteration (see SharedPage::Handler::ResyncWithHostClock). Frontends call this when resuming
+     * from a pause, as the emulated clock does not advance while paused. Safe to call from any
+     * thread.
+     */
+    void RequestClockResync() {
+        clock_resync_requested = true;
+    }
+
+    /**
      * Load an executable application.
      * @param emu_window Reference to the host-system window used for video output and keyboard
      *                   input.
@@ -513,6 +523,9 @@ private:
     static System s_instance;
 
     std::atomic_bool is_powered_on{};
+
+    /// Set by RequestClockResync(), consumed by RunLoop() on the emulation thread
+    std::atomic_bool clock_resync_requested{};
 
     SaveStateStatus save_state_status = SaveStateStatus::NONE;
     SaveStateStatus save_state_request_status = SaveStateStatus::NONE;
