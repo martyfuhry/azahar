@@ -205,23 +205,24 @@ cmd_mem() {
 boot_timeline() {
     local log=$1 t0=$2 pid=$3
     awk -v t0="$t0" -v pid="$pid" -v pkg="$PKG" -v act="$ACTIVITY" '
-        function ev(name) { printf "%7d  %s\n", ($1 * 1000) - t0, name }
+        function ev(name) { printf "%7d  %s\n", (ts * 1000) - t0, name }
+        { ts = $1 }
         $0 ~ "am_proc_start: \\[0," pid "," && !seen["fork"]++ { ev("am_proc_start (process fork)") }
-        $3 == pid && /Logging backend initialised|LoadINI/ && !seen["cfg"]++ { ev("config loaded (first native log)") }
-        $3 == pid && /Azahar Version/ && !seen["ver"]++ { sub(/.*Azahar Version: /, ""); ev("banner: " $0) }
-        $3 == pid && /Azahar starting/ && !seen["run"]++ { ev("RunCitra: Azahar starting") }
+        $2 == pid && /Logging backend initialised|LoadINI/ && !seen["cfg"]++ { ev("config loaded (first native log)") }
+        $2 == pid && /Azahar Version/ && !seen["ver"]++ { sub(/.*Azahar Version: /, ""); ev("banner: " $0) }
+        $2 == pid && /Azahar starting/ && !seen["run"]++ { ev("RunCitra: Azahar starting") }
         $0 ~ "Displayed " pkg "/" act && !seen["disp"]++ { match($0, /\+[0-9]+ms/); ev("ActivityTaskManager Displayed " substr($0, RSTART, RLENGTH)) }
-        $3 == pid && /VK_DRIVER/ && !seen["vk"]++ { sub(/.*VK_DRIVER: /, ""); ev("VK_DRIVER " $0) }
-        $3 == pid && /Upload buffer created|Creating upload buffer/ && !seen["upl"]++ { ev("Vulkan upload buffer created") }
-        $3 == pid && /LoadDriverPipelineDiskCache/ && !seen["pc"]++ { match($0, /size [0-9]+ KB/); ev("pipeline disk cache load begins (" substr($0, RSTART, RLENGTH) ")") }
-        $3 == pid && /Init(VS|FS|GS|PL)Cache/ && !seen["sc"]++ { ev("shader disk cache load begins") }
-        $3 == pid && /RegisterClient/ && !seen["srv"]++ { ev("Service.SRV RegisterClient (guest OS up)") }
-        $3 == pid && /Resuming from autosave/ && !seen["as"]++ { ev("autosave: resuming") }
-        $3 == pid && /Ignoring autosave|Skipping autosave/ && !seen["as"]++ { sub(/.*<Info> /, ""); sub(/.*<Warning> /, ""); sub(/.*: /, ""); ev("autosave: " $0) }
-        $3 == pid && /Begin load of slot/ && !seen["ld0"]++ { ev("savestate load begins") }
-        $3 == pid && /Load completed/ && !seen["ld1"]++ { ev("savestate load completed") }
-        $3 == pid && $0 ~ "SurfaceView\\[" pkg "/" act "\\].*first frame is available" && !seen["ff"]++ { ev("FIRST EMULATION FRAME (SurfaceView BLASTBufferQueue)") }
-        $3 == pid && /DSP firmware|Loaded DSP/ && !seen["dsp"]++ { ev("DSP firmware loaded") }
+        $2 == pid && /VK_DRIVER/ && !seen["vk"]++ { sub(/.*VK_DRIVER: /, ""); ev("VK_DRIVER " $0) }
+        $2 == pid && /Upload buffer created|Creating upload buffer/ && !seen["upl"]++ { ev("Vulkan upload buffer created") }
+        $2 == pid && /LoadDriverPipelineDiskCache/ && !seen["pc"]++ { match($0, /size [0-9]+ KB/); ev("pipeline disk cache load begins (" substr($0, RSTART, RLENGTH) ")") }
+        $2 == pid && /Init(VS|FS|GS|PL)Cache/ && !seen["sc"]++ { ev("shader disk cache load begins") }
+        $2 == pid && /RegisterClient/ && !seen["srv"]++ { ev("Service.SRV RegisterClient (guest OS up)") }
+        $2 == pid && /Resuming from autosave/ && !seen["as"]++ { ev("autosave: resuming") }
+        $2 == pid && /Ignoring autosave|Skipping autosave/ && !seen["as"]++ { sub(/.*<Info> /, ""); sub(/.*<Warning> /, ""); sub(/.*: /, ""); ev("autosave: " $0) }
+        $2 == pid && /Begin load of slot/ && !seen["ld0"]++ { ev("savestate load begins") }
+        $2 == pid && /Load completed/ && !seen["ld1"]++ { ev("savestate load completed") }
+        $2 == pid && $0 ~ "SurfaceView\\[" pkg "/" act "\\].*first frame is available" && !seen["ff"]++ { ev("FIRST EMULATION FRAME (SurfaceView BLASTBufferQueue)") }
+        $2 == pid && /DSP firmware|Loaded DSP/ && !seen["dsp"]++ { ev("DSP firmware loaded") }
     ' "$log"
 }
 

@@ -15,7 +15,7 @@ macro(generate_build_info)
         string(STRIP "${GIT_REV_RAW}" GIT_REV)
         string(SUBSTRING "${GIT_REV_RAW}" 0 9 GIT_DESC)
         set(GIT_BRANCH "HEAD")
-    elseif (EXISTS "${CMAKE_SOURCE_DIR}/.git/objects")
+    elseif (EXISTS "${CMAKE_SOURCE_DIR}/.git")
         # Find the package here with the known path so that the GetGit commands can find it as well
         find_package(Git QUIET PATHS "${GIT_EXECUTABLE}")
 
@@ -24,6 +24,13 @@ macro(generate_build_info)
         get_git_head_revision(GIT_REF_SPEC GIT_REV)
         git_describe(GIT_DESC --always --long --dirty)
         git_branch_name(GIT_BRANCH)
+        # In a git worktree .git is a file and the branch refs live in the main repository, which
+        # get_git_head_revision does not follow; ask git itself for the hash in that case
+        if (NOT GIT_REV AND GIT_FOUND)
+            execute_process(COMMAND "${GIT_EXECUTABLE}" rev-parse HEAD
+                WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+                OUTPUT_VARIABLE GIT_REV ERROR_QUIET OUTPUT_STRIP_TRAILING_WHITESPACE)
+        endif()
         if (DEFINED ENV{CITRA_USE_TAG_AS_VERSION})
             git_describe(GIT_TAG --tags --dirty)
         endif()
