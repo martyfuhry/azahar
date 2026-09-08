@@ -6,6 +6,7 @@
 # Device measurement kit for the Azahar fork (docs/fork/improvement-plan.md §2.2, D-1..D-5, D-7).
 # Runs on the host against one Android device over adb. See tools/thor/README.md.
 #
+#   measure.sh install <apk>            install and refuse to continue unless the package matches
 #   measure.sh identity                 build/package/process identity, screen and scrcpy state
 #   measure.sh cpu <secs>               per-thread CPU % over a window, total, oomAdj/procState
 #   measure.sh mem [label]              PSS / GL / EGL / Native Heap, VmRSS/RssAnon/VmSwap, oom_score_adj
@@ -64,6 +65,26 @@ top_activity() {
 
 adb_identity() {
     adb get-serialno | tr -d '\r'
+}
+
+# ----------------------------------------------------------------- install ----
+
+cmd_install() {
+    local apk=${1:?apk path} want got
+    hdr "install: $apk"
+    want=$(unzip -p "$apk" AndroidManifest.xml 2>/dev/null | strings | grep -m1 -oE '[0-9a-f]{7,}-(vanilla|googleplay|debug)' || true)
+    if [ -z "$want" ] && command -v aapt2 >/dev/null; then
+        want=$(aapt2 dump badging "$apk" | grep -oE "versionName='[^']*'" | cut -d"'" -f2)
+    fi
+    say "apk versionName: ${want:-<unreadable; pass the hash as \$2>}"
+    [ -n "${2:-}" ] && want=$2
+    # versionCode is the build's timestamp, so an older build will not install over a newer one
+    # (-d is ignored for non-debuggable apps); the failure text says so
+    adb install -r -d -t "$apk" 2>&1 | tail -1
+    got=$(ash dumpsys package "$PKG" | tr -d '\r' | grep -m1 versionName | cut -d= -f2)
+    say "installed:       $got"
+    [ -n "$want" ] && [ "$got" != "$want" ] && die "installed package is $got, not $want (older versionCode? rebuild, or uninstall first)"
+    return 0
 }
 
 # ---------------------------------------------------------------- identity ----
@@ -448,6 +469,7 @@ usage() { sed -n '8,20p' "$0"; exit 1; }
 adb get-state >/dev/null 2>&1 || die "no device (set ANDROID_SERIAL)"
 cmd=$1; shift
 case "$cmd" in
+    install) cmd_install "$@" ;;
     identity) cmd_identity "$@" ;;
     cpu) cmd_cpu "$@" ;;
     mem) cmd_mem "$@" ;;

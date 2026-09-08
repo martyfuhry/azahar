@@ -22,6 +22,14 @@ Environment overrides: `PKG` (default `org.azahar_emu.azahar`), `ACTIVITY`
 
 ## Subcommands
 
+### `install <apk> [expected-versionName]`
+
+`adb install -r -d -t` followed by a check that `dumpsys package` now reports the APK's
+`versionName` (read from the APK, or given explicitly). The Android `versionCode` is the
+build's timestamp, and Android ignores `-d` for non-debuggable packages, so an older
+build silently fails to replace a newer one with `INSTALL_FAILED_VERSION_DOWNGRADE`;
+this subcommand turns that into a hard error instead of a mis-attributed measurement.
+
 ### `identity` — do this first, every time
 
 Package `versionName`/`versionCode`/`lastUpdateTime`, the `Azahar Version:` banner from
