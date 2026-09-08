@@ -281,8 +281,18 @@ class EmulationActivity : AppCompatActivity() {
     override fun onRestoreInstanceState(savedInstanceState: Bundle) {
         super.onRestoreInstanceState(savedInstanceState)
         isEmulationRunning = savedInstanceState.getBoolean("isEmulationRunning", false)
-        isEmulationReady = savedInstanceState.getBoolean("isEmulationReady", false)
-        isRotationBlocked = savedInstanceState.getBoolean("isRotationBlocked", isRotationBlocked)
+        // The bundle outlives the process. When Android restores the task after killing us,
+        // the core is gone and the fragment is about to boot the title from scratch, so a
+        // saved "ready" would hide the loading UI and unlock the drawer over a black screen.
+        // Only trust it when the core actually survived (activity recreated in-process).
+        if (NativeLibrary.isRunning()) {
+            isEmulationReady = savedInstanceState.getBoolean("isEmulationReady", false)
+            isRotationBlocked =
+                savedInstanceState.getBoolean("isRotationBlocked", isRotationBlocked)
+        } else {
+            isEmulationReady = false
+            isRotationBlocked = true
+        }
     }
 
     override fun onDestroy() {
