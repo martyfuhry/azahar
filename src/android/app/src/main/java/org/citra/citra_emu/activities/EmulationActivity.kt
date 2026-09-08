@@ -367,7 +367,7 @@ class EmulationActivity : AppCompatActivity() {
         isEmulationRunning = false
         instance = null
         secondaryDisplayManager.releasePresentation()
-        secondaryDisplayManager.releaseVD()
+        secondaryDisplayManager.release()
         ForegroundService.stop(this)
 
         super.onDestroy()

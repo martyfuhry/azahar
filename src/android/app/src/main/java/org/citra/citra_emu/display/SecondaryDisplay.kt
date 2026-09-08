@@ -7,7 +7,6 @@ package org.citra.citra_emu.display
 import android.app.Presentation
 import android.content.Context
 import android.hardware.display.DisplayManager
-import android.hardware.display.VirtualDisplay
 import android.os.Build
 import android.os.Bundle
 import android.view.Display
@@ -23,7 +22,6 @@ import org.citra.citra_emu.utils.Log
 class SecondaryDisplay(val context: Context) : DisplayManager.DisplayListener {
     private var pres: SecondaryDisplayPresentation? = null
     private val displayManager = context.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
-    private val vd: VirtualDisplay
     var preferredDisplayId = -1
     var currentDisplayId = -1
 
@@ -31,14 +29,6 @@ class SecondaryDisplay(val context: Context) : DisplayManager.DisplayListener {
         get() = getSecondaryDisplays()
 
     init {
-        vd = displayManager.createVirtualDisplay(
-            "HiddenDisplay",
-            1920,
-            1080,
-            320,
-            null,
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_PRESENTATION
-        )
         displayManager.registerDisplayListener(this, null)
     }
 
@@ -73,7 +63,6 @@ class SecondaryDisplay(val context: Context) : DisplayManager.DisplayListener {
 
             isNotDefaultOrPresentable &&
                 it.displayId != currentDisplayId &&
-                it.name != "HiddenDisplay" &&
                 it.state != Display.STATE_OFF &&
                 it.isValid
         }
@@ -85,30 +74,40 @@ class SecondaryDisplay(val context: Context) : DisplayManager.DisplayListener {
             return
         }
 
-        val displayToUse = if (availableDisplays.isEmpty() ||
+        val secondaryWanted = BooleanSetting.ENABLE_SECONDARY_DISPLAY.boolean &&
             // Theoretically, the NONE option is no longer selectable, but
             // I am leaving this in for backwards compatibility
-            IntSetting.SECONDARY_DISPLAY_LAYOUT.int == SecondaryDisplayLayout.NONE.int ||
-            !BooleanSetting.ENABLE_SECONDARY_DISPLAY.boolean
-        ) {
+            IntSetting.SECONDARY_DISPLAY_LAYOUT.int != SecondaryDisplayLayout.NONE.int
+        val displays = if (secondaryWanted) availableDisplays else emptyList()
+
+        if (displays.isEmpty()) {
+            // Nothing to present on. This used to fall back to a hidden 1920x1080
+            // VirtualDisplay, which cost the emulation thread a second render and present of
+            // every single frame (one fence wait, one fullscreen renderpass, one blit, one
+            // queue submit, one queue present) plus a second 1080p swapchain in VRAM, for
+            // pixels that no one could ever see. Show no Presentation at all instead; the
+            // native side drops its secondary swapchain when the surface goes away and
+            // rebuilds it the moment a real display shows up again.
             currentDisplayId = -1
-            vd.display
-        } else if (preferredDisplayId >= 0 &&
-            availableDisplays.any { it.displayId == preferredDisplayId }
+            releasePresentation()
+            return
+        }
+
+        val displayToUse = if (preferredDisplayId >= 0 &&
+            displays.any { it.displayId == preferredDisplayId }
         ) {
             currentDisplayId = preferredDisplayId
-            availableDisplays.first { it.displayId == preferredDisplayId }
+            displays.first { it.displayId == preferredDisplayId }
         } else {
-            val dm = context.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
-            val default = dm.displays.first { it.displayId == Display.DEFAULT_DISPLAY }
+            val default = displayManager.displays.first { it.displayId == Display.DEFAULT_DISPLAY }
             // prioritize displays that have a different name from the default display, as
             // some devices such as the Odin 2 create a permanent virtual display with the same
             // name as the default display that should be skipped in most cases
-            currentDisplayId = availableDisplays.firstOrNull {
+            currentDisplayId = displays.firstOrNull {
                 it.name != default.name && !it.name.contains("Built", true)
             }?.displayId
-                ?: availableDisplays[0].displayId
-            availableDisplays.first { it.displayId == currentDisplayId }
+                ?: displays[0].displayId
+            displays.first { it.displayId == currentDisplayId }
         }
 
         // if our presentation is already on the right display, ignore
@@ -118,7 +117,7 @@ class SecondaryDisplay(val context: Context) : DisplayManager.DisplayListener {
         releasePresentation()
 
         try {
-            pres = SecondaryDisplayPresentation(context, displayToUse!!, this)
+            pres = SecondaryDisplayPresentation(context, displayToUse, this)
             pres?.show()
         }
         // catch BadTokenException and InvalidDisplayException,
@@ -132,15 +131,23 @@ class SecondaryDisplay(val context: Context) : DisplayManager.DisplayListener {
     }
 
     fun releasePresentation() {
+        val hadPresentation = pres != null
         try {
             pres?.dismiss()
         } catch (_: Exception) { }
         pres = null
+        // dismiss() detaches the decor view synchronously on the main thread, so the
+        // SurfaceHolder callback above normally tells the core already. It does not fire when
+        // the Presentation never got as far as showing a surface (the display went away first),
+        // and leaving a stale ANativeWindow behind keeps the core rendering a second frame to a
+        // window nothing displays. The native call is a no-op once the surface is released.
+        if (hadPresentation) {
+            NativeLibrary.secondarySurfaceDestroyed()
+        }
     }
 
-    fun releaseVD() {
+    fun release() {
         displayManager.unregisterDisplayListener(this)
-        vd.release()
     }
 
     override fun onDisplayAdded(displayId: Int) {
