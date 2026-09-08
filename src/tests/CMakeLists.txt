@@ -3,6 +3,7 @@ add_executable(tests
     common/file_util.cpp
     common/param_package.cpp
     common/zstd_stream.cpp
+    core/core.cpp
     core/core_timing.cpp
     core/savestate.cpp
     core/file_sys/path_parser.cpp
