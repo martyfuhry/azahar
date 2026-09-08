@@ -4,6 +4,7 @@
 
 #include "video_core/renderer_vulkan/vk_texture_runtime.h"
 
+#include <algorithm>
 #include <limits>
 #include <span>
 #include <string>
@@ -158,8 +159,13 @@ vk::ImageSubresourceRange MakeSubresourceRange(vk::ImageAspectFlags aspect, u32 
     };
 }
 
-constexpr u64 UPLOAD_BUFFER_SIZE = 512_MiB;
+constexpr u64 UPLOAD_BUFFER_SIZE = 64_MiB;
 constexpr u64 DOWNLOAD_BUFFER_SIZE = 16_MiB;
+
+/// A staging request larger than this fraction of its ring buffer is served by a dedicated
+/// one-shot buffer instead, so a single request never waits on most of the previous ring cycle
+/// and nothing is ever too large to stage.
+constexpr u64 ONE_SHOT_STAGING_DIVISOR = 4;
 
 } // Anonymous namespace
 
@@ -294,16 +300,123 @@ TextureRuntime::TextureRuntime(const Instance& instance, Scheduler& scheduler,
                       DOWNLOAD_BUFFER_SIZE, BufferType::Download},
       num_swapchain_images{num_swapchain_images_} {}
 
-TextureRuntime::~TextureRuntime() = default;
+TextureRuntime::~TextureRuntime() {
+    for (const OneShotStaging& staging : one_shot_stagings) {
+        if (staging.tick && !scheduler.IsFree(*staging.tick)) {
+            scheduler.Wait(*staging.tick);
+        }
+        vmaDestroyBuffer(instance.GetAllocator(), staging.buffer, staging.allocation);
+    }
+}
 
 VideoCore::StagingData TextureRuntime::FindStaging(u32 size, bool upload) {
+    CollectOneShotStagings();
+
     StreamBuffer& buffer = upload ? upload_buffer : download_buffer;
+    if (size > buffer.Size() / ONE_SHOT_STAGING_DIVISOR) {
+        return AllocateOneShotStaging(size, upload);
+    }
+
     const auto [data, offset, invalidate] = buffer.Map(size, 16);
     return VideoCore::StagingData{
         .size = size,
         .offset = offset,
         .mapped = std::span{data, size},
     };
+}
+
+vk::Buffer TextureRuntime::StagingBuffer(const VideoCore::StagingData& staging, bool upload) {
+    if (const OneShotStaging* one_shot = FindOneShotStaging(staging)) {
+        return one_shot->buffer;
+    }
+    return upload ? upload_buffer.Handle() : download_buffer.Handle();
+}
+
+void TextureRuntime::CommitStaging(const VideoCore::StagingData& staging, bool upload) {
+    if (OneShotStaging* one_shot = FindOneShotStaging(staging)) {
+        // The host wrote the whole buffer before an upload and reads it after a download; the
+        // ring buffer does the same flush/invalidate in StreamBuffer::Commit. Both are no-ops on
+        // coherent memory.
+        if (upload) {
+            vmaFlushAllocation(instance.GetAllocator(), one_shot->allocation, 0, staging.size);
+        } else {
+            vmaInvalidateAllocation(instance.GetAllocator(), one_shot->allocation, 0, staging.size);
+        }
+        one_shot->tick = scheduler.CurrentTick();
+        return;
+    }
+    StreamBuffer& buffer = upload ? upload_buffer : download_buffer;
+    buffer.Commit(staging.size);
+}
+
+VideoCore::StagingData TextureRuntime::AllocateOneShotStaging(u32 size, bool upload) {
+    const StreamBuffer& ring = upload ? upload_buffer : download_buffer;
+    LOG_DEBUG(Render_Vulkan, "{} of {} KiB exceeds the {} KiB ring, using a one-shot buffer",
+              upload ? "Upload" : "Download", size / 1024, ring.Size() / 1024);
+
+    const vk::BufferCreateInfo buffer_info = {
+        .size = size,
+        .usage = upload ? vk::BufferUsageFlagBits::eTransferSrc
+                        : vk::BufferUsageFlagBits::eTransferDst |
+                              vk::BufferUsageFlagBits::eStorageBuffer,
+    };
+    const VmaAllocationCreateFlags host_access =
+        upload ? VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT
+               : VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT;
+    const VmaAllocationCreateInfo alloc_create_info = {
+        .flags = VMA_ALLOCATION_CREATE_MAPPED_BIT | host_access,
+        .usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+        .requiredFlags = 0,
+        .preferredFlags = 0,
+        .pool = VK_NULL_HANDLE,
+        .pUserData = nullptr,
+    };
+
+    VkBuffer unsafe_buffer{};
+    VmaAllocation allocation{};
+    VmaAllocationInfo alloc_info{};
+    VkBufferCreateInfo unsafe_buffer_info = static_cast<VkBufferCreateInfo>(buffer_info);
+
+    const VkResult result =
+        vmaCreateBuffer(instance.GetAllocator(), &unsafe_buffer_info, &alloc_create_info,
+                        &unsafe_buffer, &allocation, &alloc_info);
+    if (result != VK_SUCCESS) [[unlikely]] {
+        LOG_CRITICAL(Render_Vulkan, "Failed allocating {} KiB staging buffer with error {}",
+                     size / 1024, result);
+        UNREACHABLE();
+    }
+
+    const OneShotStaging& staging = one_shot_stagings.emplace_back(OneShotStaging{
+        .buffer = vk::Buffer{unsafe_buffer},
+        .allocation = allocation,
+        .mapped = static_cast<u8*>(alloc_info.pMappedData),
+        .size = size,
+        .tick = std::nullopt,
+    });
+    return VideoCore::StagingData{
+        .size = size,
+        .offset = 0,
+        .mapped = std::span{staging.mapped, size},
+    };
+}
+
+TextureRuntime::OneShotStaging* TextureRuntime::FindOneShotStaging(
+    const VideoCore::StagingData& staging) {
+    const auto it =
+        std::ranges::find(one_shot_stagings, staging.mapped.data(), &OneShotStaging::mapped);
+    return it != one_shot_stagings.end() ? &*it : nullptr;
+}
+
+void TextureRuntime::CollectOneShotStagings() {
+    // A buffer that was never committed belongs to an abandoned request and nothing on the GPU
+    // refers to it; a committed one is free once its tick has passed.
+    std::erase_if(one_shot_stagings, [this](const OneShotStaging& staging) {
+        if (staging.tick && !scheduler.IsFree(*staging.tick)) {
+            return false;
+        }
+        vmaDestroyBuffer(instance.GetAllocator(), staging.buffer, staging.allocation);
+        return true;
+    });
 }
 
 u64 TextureRuntime::GetResourceTick() {
@@ -875,7 +988,7 @@ void Surface::Upload(const VideoCore::BufferTextureCopy& upload,
         .src_image = Image(Type::Base),
     };
 
-    scheduler.Record([buffer = runtime.upload_buffer.Handle(), format = traits.native, params,
+    scheduler.Record([buffer = runtime.StagingBuffer(staging, true), format = traits.native, params,
                       staging, upload](vk::CommandBuffer cmdbuf) {
         boost::container::static_vector<vk::BufferImageCopy, 2> buffer_image_copies;
 
@@ -935,7 +1048,7 @@ void Surface::Upload(const VideoCore::BufferTextureCopy& upload,
                                vk::DependencyFlagBits::eByRegion, {}, {}, write_barrier);
     });
 
-    runtime.upload_buffer.Commit(staging.size);
+    runtime.CommitStaging(staging, true);
 
     if (res_scale != 1) {
         ASSERT_MSG(handles[Type::Scaled], "Scaled allocation missing during upload");
@@ -968,12 +1081,11 @@ void Surface::UploadCustom(const VideoCore::Material* material, u32 level) {
             .src_image = Image(type),
         };
 
-        const auto [data, offset, invalidate] = runtime.upload_buffer.Map(custom_size, 0);
-        std::memcpy(data, texture->data.data(), custom_size);
-        runtime.upload_buffer.Commit(custom_size);
+        const auto staging = runtime.FindStaging(custom_size, true);
+        std::memcpy(staging.mapped.data(), texture->data.data(), custom_size);
 
-        scheduler.Record([buffer = runtime.upload_buffer.Handle(), level, params, rect,
-                          offset = offset](vk::CommandBuffer cmdbuf) {
+        scheduler.Record([buffer = runtime.StagingBuffer(staging, true), level, params, rect,
+                          offset = staging.offset](vk::CommandBuffer cmdbuf) {
             const vk::BufferImageCopy buffer_image_copy = {
                 .bufferOffset = offset,
                 .bufferRowLength = 0,
@@ -1018,6 +1130,8 @@ void Surface::UploadCustom(const VideoCore::Material* material, u32 level) {
             cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, params.pipeline_flags,
                                    vk::DependencyFlagBits::eByRegion, {}, {}, write_barrier);
         });
+
+        runtime.CommitStaging(staging, true);
     };
 
     upload(Type::Base, color);
@@ -1030,13 +1144,13 @@ void Surface::Download(const VideoCore::BufferTextureCopy& download,
                        const VideoCore::StagingData& staging) {
     SCOPE_EXIT({
         scheduler.Finish();
-        runtime.download_buffer.Commit(staging.size);
+        runtime.CommitStaging(staging, false);
     });
 
     runtime.renderpass_cache.EndRendering();
 
     if (pixel_format == PixelFormat::D24S8) {
-        runtime.blit_helper.DepthToBuffer(*this, runtime.download_buffer.Handle(), download);
+        runtime.blit_helper.DepthToBuffer(*this, runtime.StagingBuffer(staging, false), download);
         return;
     }
 
@@ -1058,58 +1172,58 @@ void Surface::Download(const VideoCore::BufferTextureCopy& download,
         .src_image = Image(Type::Base),
     };
 
-    scheduler.Record(
-        [buffer = runtime.download_buffer.Handle(), params, download](vk::CommandBuffer cmdbuf) {
-            const auto rect = download.texture_rect;
-            const vk::BufferImageCopy buffer_image_copy = {
-                .bufferOffset = download.buffer_offset,
-                .bufferRowLength = rect.GetWidth(),
-                .bufferImageHeight = rect.GetHeight(),
-                .imageSubresource{
-                    .aspectMask = params.aspect,
-                    .mipLevel = download.texture_level,
-                    .baseArrayLayer = 0,
-                    .layerCount = 1,
-                },
-                .imageOffset = {static_cast<s32>(rect.left), static_cast<s32>(rect.bottom), 0},
-                .imageExtent = {rect.GetWidth(), rect.GetHeight(), 1},
-            };
+    scheduler.Record([buffer = runtime.StagingBuffer(staging, false), params,
+                      download](vk::CommandBuffer cmdbuf) {
+        const auto rect = download.texture_rect;
+        const vk::BufferImageCopy buffer_image_copy = {
+            .bufferOffset = download.buffer_offset,
+            .bufferRowLength = rect.GetWidth(),
+            .bufferImageHeight = rect.GetHeight(),
+            .imageSubresource{
+                .aspectMask = params.aspect,
+                .mipLevel = download.texture_level,
+                .baseArrayLayer = 0,
+                .layerCount = 1,
+            },
+            .imageOffset = {static_cast<s32>(rect.left), static_cast<s32>(rect.bottom), 0},
+            .imageExtent = {rect.GetWidth(), rect.GetHeight(), 1},
+        };
 
-            const vk::ImageMemoryBarrier read_barrier = {
-                .srcAccessMask = vk::AccessFlagBits::eMemoryWrite,
-                .dstAccessMask = vk::AccessFlagBits::eTransferRead,
-                .oldLayout = vk::ImageLayout::eGeneral,
-                .newLayout = vk::ImageLayout::eTransferSrcOptimal,
-                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .image = params.src_image,
-                .subresourceRange = MakeSubresourceRange(params.aspect, download.texture_level),
-            };
-            const vk::ImageMemoryBarrier image_write_barrier = {
-                .srcAccessMask = vk::AccessFlagBits::eNone,
-                .dstAccessMask = vk::AccessFlagBits::eMemoryWrite,
-                .oldLayout = vk::ImageLayout::eTransferSrcOptimal,
-                .newLayout = vk::ImageLayout::eGeneral,
-                .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-                .image = params.src_image,
-                .subresourceRange = MakeSubresourceRange(params.aspect, download.texture_level),
-            };
-            const vk::MemoryBarrier memory_write_barrier = {
-                .srcAccessMask = vk::AccessFlagBits::eMemoryWrite,
-                .dstAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
-            };
+        const vk::ImageMemoryBarrier read_barrier = {
+            .srcAccessMask = vk::AccessFlagBits::eMemoryWrite,
+            .dstAccessMask = vk::AccessFlagBits::eTransferRead,
+            .oldLayout = vk::ImageLayout::eGeneral,
+            .newLayout = vk::ImageLayout::eTransferSrcOptimal,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = params.src_image,
+            .subresourceRange = MakeSubresourceRange(params.aspect, download.texture_level),
+        };
+        const vk::ImageMemoryBarrier image_write_barrier = {
+            .srcAccessMask = vk::AccessFlagBits::eNone,
+            .dstAccessMask = vk::AccessFlagBits::eMemoryWrite,
+            .oldLayout = vk::ImageLayout::eTransferSrcOptimal,
+            .newLayout = vk::ImageLayout::eGeneral,
+            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+            .image = params.src_image,
+            .subresourceRange = MakeSubresourceRange(params.aspect, download.texture_level),
+        };
+        const vk::MemoryBarrier memory_write_barrier = {
+            .srcAccessMask = vk::AccessFlagBits::eMemoryWrite,
+            .dstAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite,
+        };
 
-            cmdbuf.pipelineBarrier(params.pipeline_flags, vk::PipelineStageFlagBits::eTransfer,
-                                   vk::DependencyFlagBits::eByRegion, {}, {}, read_barrier);
+        cmdbuf.pipelineBarrier(params.pipeline_flags, vk::PipelineStageFlagBits::eTransfer,
+                               vk::DependencyFlagBits::eByRegion, {}, {}, read_barrier);
 
-            cmdbuf.copyImageToBuffer(params.src_image, vk::ImageLayout::eTransferSrcOptimal, buffer,
-                                     buffer_image_copy);
+        cmdbuf.copyImageToBuffer(params.src_image, vk::ImageLayout::eTransferSrcOptimal, buffer,
+                                 buffer_image_copy);
 
-            cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, params.pipeline_flags,
-                                   vk::DependencyFlagBits::eByRegion, memory_write_barrier, {},
-                                   image_write_barrier);
-        });
+        cmdbuf.pipelineBarrier(vk::PipelineStageFlagBits::eTransfer, params.pipeline_flags,
+                               vk::DependencyFlagBits::eByRegion, memory_write_barrier, {},
+                               image_write_barrier);
+    });
 }
 
 void Surface::ScaleUp(u32 new_scale) {

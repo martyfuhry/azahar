@@ -4,7 +4,9 @@
 
 #pragma once
 
+#include <optional>
 #include <span>
+#include <vector>
 #include "video_core/rasterizer_cache/framebuffer_base.h"
 #include "video_core/rasterizer_cache/rasterizer_cache_base.h"
 #include "video_core/rasterizer_cache/surface_base.h"
@@ -138,6 +140,12 @@ public:
     /// Maps an internal staging buffer of the provided size for pixel uploads/downloads
     VideoCore::StagingData FindStaging(u32 size, bool upload);
 
+    /// Returns the buffer that backs a staging allocation made by FindStaging
+    vk::Buffer StagingBuffer(const VideoCore::StagingData& staging, bool upload);
+
+    /// Hands a staging allocation made by FindStaging over to the GPU work recorded so far
+    void CommitStaging(const VideoCore::StagingData& staging, bool upload);
+
     /// Attempts to reinterpret a rectangle of source to another rectangle of dest
     bool Reinterpret(Surface& source, Surface& dest, const VideoCore::TextureCopy& copy);
 
@@ -162,8 +170,26 @@ public:
     bool NeedsConversion(const Surface& surface) const;
 
 private:
+    /// A dedicated host-visible buffer serving one staging request the ring buffer cannot
+    struct OneShotStaging {
+        vk::Buffer buffer;
+        VmaAllocation allocation;
+        u8* mapped;
+        u32 size;
+        std::optional<u64> tick; ///< Tick of the GPU work using the buffer, set on commit
+    };
+
     /// Clears a partial texture rect using a clear rectangle
     void ClearTextureWithRenderpass(Surface& surface, const VideoCore::TextureClear& clear);
+
+    /// Allocates a one-shot staging buffer for a request the ring buffer cannot serve
+    VideoCore::StagingData AllocateOneShotStaging(u32 size, bool upload);
+
+    /// Returns the one-shot staging buffer backing the allocation, if any
+    OneShotStaging* FindOneShotStaging(const VideoCore::StagingData& staging);
+
+    /// Frees one-shot staging buffers whose GPU work has completed
+    void CollectOneShotStagings();
 
 private:
     const Instance& instance;
@@ -172,6 +198,7 @@ private:
     BlitHelper blit_helper;
     StreamBuffer upload_buffer;
     StreamBuffer download_buffer;
+    std::vector<OneShotStaging> one_shot_stagings;
     u32 num_swapchain_images;
 };
 
