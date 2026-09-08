@@ -28,6 +28,7 @@ object SettingKeys {
     external fun allow_plugin_loader(): String
     external fun steps_per_hour(): String
     external fun apply_region_free_patch(): String
+    external fun autosave_mode(): String
     external fun graphics_api(): String
     external fun use_gles(): String
     external fun renderer_debug(): String

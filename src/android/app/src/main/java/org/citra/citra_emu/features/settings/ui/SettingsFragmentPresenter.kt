@@ -654,6 +654,19 @@ class SettingsFragmentPresenter(private val fragmentView: SettingsFragmentView) 
                     BooleanSetting.ASYNC_FS_OPERATIONS.defaultValue
                 )
             )
+
+            add(HeaderSetting(R.string.autosave))
+            add(
+                SingleChoiceSetting(
+                    IntSetting.AUTOSAVE_MODE,
+                    R.string.autosave_mode,
+                    R.string.autosave_mode_description,
+                    R.array.autoSaveModeNames,
+                    R.array.autoSaveModeValues,
+                    IntSetting.AUTOSAVE_MODE.key,
+                    IntSetting.AUTOSAVE_MODE.defaultValue
+                )
+            )
         }
     }
 

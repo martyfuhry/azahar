@@ -274,6 +274,7 @@ void Config::ReadValues() {
     ReadSetting("System", Settings::values.allow_plugin_loader);
     ReadSetting("System", Settings::values.steps_per_hour);
     ReadSetting("System", Settings::values.apply_region_free_patch);
+    ReadSetting("System", Settings::values.autosave_mode);
 
     // Camera
     using namespace Service::CAM;

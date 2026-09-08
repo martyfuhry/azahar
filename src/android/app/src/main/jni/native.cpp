@@ -3,6 +3,7 @@
 // Refer to the license.txt file included.
 
 #include <algorithm>
+#include <chrono>
 #include <codecvt>
 #include <thread>
 #include <dlfcn.h>
@@ -103,6 +104,16 @@ std::mutex paused_mutex;
 std::mutex running_mutex;
 std::condition_variable running_cv;
 
+// Handshake for the automatic "save on exit" state. The UI thread bumps autosave_requested
+// (under paused_mutex, so a parked emulation thread cannot miss the wake-up on running_cv)
+// and may then block on autosave_cv until the emulation thread has caught up by publishing
+// the request number it carried out in autosave_completed. The state is serialized on the
+// emulation thread only, between RunLoop() calls, where the CPU is idle. See FlushAutoSave().
+std::atomic<u32> autosave_requested{0};
+std::atomic<u32> autosave_completed{0};
+std::mutex autosave_mutex;
+std::condition_variable autosave_cv;
+
 // Guards the lifetime of s_surface/s_secondary_surface and the (re)creation of the
 // EmuWindow_Android and renderer objects that consume them. Android may destroy or replace the
 // Surface passed to us (on rotation, or if the fragment hosting the SurfaceView is torn
@@ -194,6 +205,124 @@ static void TryShutdown() {
 static bool CheckMicPermission() {
     return IDCache::GetEnvForThread()->CallStaticBooleanMethod(IDCache::GetNativeLibraryClass(),
                                                                IDCache::GetRequestMicPermission());
+}
+
+// Mirrors NativeLibrary.AutoSaveEvent in Kotlin
+enum class AutoSaveEvent : jint {
+    Offered = 0,       ///< A fresh autosave exists; the user decides whether to load it
+    Resuming = 1,      ///< A fresh autosave is being loaded because the mode is "always"
+    BuildMismatch = 2, ///< A fresh autosave exists but this build cannot load it
+};
+
+static void NotifyAutoSaveEvent(AutoSaveEvent event, const Core::SaveStateInfo& info) {
+    JNIEnv* env = IDCache::GetEnvForThread();
+    env->CallStaticVoidMethod(IDCache::GetNativeLibraryClass(), IDCache::GetOnAutoSaveState(),
+                              static_cast<jint>(event), static_cast<jlong>(info.time * 1000),
+                              env->NewStringUTF(info.build_name.c_str()));
+}
+
+static bool AutoSaveEnabled() {
+    return Settings::values.autosave_mode.GetValue() != Settings::AutoSaveMode::Off;
+}
+
+/**
+ * Called on the emulation thread right after a title booted, before the first RunLoop().
+ * Records the boot and, if the previous session left an autosave that is newer than the
+ * previous boot, loads it or asks the user to, according to the autosave mode. The load goes
+ * through Signal::Load like a user-picked slot, so the first RunLoop() iterations perform it
+ * on this thread, RunLoop() re-anchors the guest clock afterwards, and any failure reaches
+ * the user through the usual core error dialog instead of taking the boot down.
+ */
+static void OfferAutoSaveOnBoot(Core::System& system, u64 program_id) {
+    const u64 movie_id = system.Movie().GetCurrentMovieID();
+    Core::SaveStateInfo autosave{};
+    const auto resume = Core::CheckAutoSaveState(program_id, movie_id, &autosave);
+
+    // Recorded even when the feature is off, so that turning it on later cannot resurrect an
+    // autosave that predates sessions played without it
+    const u64 now = std::chrono::duration_cast<std::chrono::seconds>(
+                        std::chrono::system_clock::now().time_since_epoch())
+                        .count();
+    Core::RecordNormalBoot(program_id, now);
+
+    if (!AutoSaveEnabled()) {
+        return;
+    }
+    switch (resume) {
+    case Core::AutoSaveResumeStatus::None:
+        break;
+    case Core::AutoSaveResumeStatus::Stale:
+        LOG_INFO(Frontend, "Ignoring autosave from {} that predates the previous boot",
+                 autosave.time);
+        break;
+    case Core::AutoSaveResumeStatus::BuildMismatch:
+        LOG_WARNING(Frontend, "Skipping autosave written by incompatible build {} {}",
+                    autosave.build_name, autosave.build_version);
+        NotifyAutoSaveEvent(AutoSaveEvent::BuildMismatch, autosave);
+        break;
+    case Core::AutoSaveResumeStatus::Resumable:
+        if (Settings::values.autosave_mode.GetValue() == Settings::AutoSaveMode::Always) {
+            LOG_INFO(Frontend, "Resuming from autosave written at {}", autosave.time);
+            system.SendSignal(Core::System::Signal::Load, Core::AutoSaveStateSlot);
+            NotifyAutoSaveEvent(AutoSaveEvent::Resuming, autosave);
+        } else {
+            NotifyAutoSaveEvent(AutoSaveEvent::Offered, autosave);
+        }
+        break;
+    }
+}
+
+/**
+ * Runs on the emulation thread between RunLoop() calls. Carries out any autosave requested
+ * since the last one: hands the core a Signal::Save for the autosave slot, then keeps pumping
+ * RunLoop() until the core reports the request as finished. The core only serializes once no
+ * kernel async operations are pending, so a few more CPU slices may execute first; the core
+ * abandons the request on its own after five seconds. Always publishes completion, so a UI
+ * thread waiting in waitForAutoSave() is released even when nothing could be saved.
+ */
+static void FlushAutoSave(Core::System& system) {
+    const u32 requested = autosave_requested.load();
+    if (autosave_completed.load() == requested) {
+        return;
+    }
+    SCOPE_EXIT({
+        {
+            std::scoped_lock lock{autosave_mutex};
+            autosave_completed = requested;
+        }
+        autosave_cv.notify_all();
+    });
+
+    if (stop_run || !system.IsPoweredOn() || !AutoSaveEnabled()) {
+        return;
+    }
+
+    const auto pump = [&system] {
+        while (!stop_run && system.HasPendingSaveStateRequest()) {
+            const auto result = system.RunLoop();
+            if (result == Core::System::ResultStatus::ShutdownRequested) {
+                stop_run = true;
+                return false;
+            }
+            if (result != Core::System::ResultStatus::Success) {
+                LOG_ERROR(Frontend, "Autosave: {}", system.GetStatusDetails());
+                return false;
+            }
+        }
+        return !stop_run;
+    };
+
+    // Let a state operation the user requested moments ago finish first
+    if (!pump()) {
+        return;
+    }
+    if (!system.SendSignal(Core::System::Signal::Save, Core::AutoSaveStateSlot)) {
+        LOG_ERROR(Frontend, "Autosave: another signal is still pending");
+        return;
+    }
+    if (pump()) {
+        LOG_INFO(Frontend, "Autosave written");
+    }
 }
 
 static Core::System::ResultStatus RunCitra(const std::string& filepath) {
@@ -346,13 +475,24 @@ static Core::System::ResultStatus RunCitra(const std::string& filepath) {
 
     LoadDiskCacheProgress(VideoCore::LoadCallbackStage::Complete, 0, 0, "");
 
-    SCOPE_EXIT({ TryShutdown(); });
+    SCOPE_EXIT({
+        TryShutdown();
+        // Release a UI thread still waiting for an autosave this thread will never perform
+        {
+            std::scoped_lock lock{autosave_mutex};
+            autosave_completed = autosave_requested.load();
+        }
+        autosave_cv.notify_all();
+    });
 
     system.RegisterCoreLoopThreadId();
+
+    OfferAutoSaveOnBoot(system, program_id);
 
     // Start running emulation
     while (!stop_run) {
         if (!pause_emulation) {
+            FlushAutoSave(system);
             const auto result = system.RunLoop();
             if (result == Core::System::ResultStatus::Success) {
                 continue;
@@ -379,8 +519,14 @@ static Core::System::ResultStatus RunCitra(const std::string& filepath) {
             SCOPE_EXIT({ Settings::values.volume = volume; });
             Settings::values.volume = 0;
 
+            // The activity going to the background asked for an autosave just before parking
+            // us here; write it now, while Android still lets the process run
+            FlushAutoSave(system);
+
             std::unique_lock pause_lock{paused_mutex};
-            running_cv.wait(pause_lock, [] { return !pause_emulation || stop_run; });
+            running_cv.wait(pause_lock, [] {
+                return !pause_emulation || stop_run || autosave_completed != autosave_requested;
+            });
             window->PollEvents();
         }
     }
@@ -864,6 +1010,29 @@ void Java_org_citra_citra_1emu_NativeLibrary_pauseEmulation([[maybe_unused]] JNI
     if (handler) {
         handler->DisableSensors();
     }
+}
+
+jboolean Java_org_citra_citra_1emu_NativeLibrary_requestAutoSave([[maybe_unused]] JNIEnv* env,
+                                                                 [[maybe_unused]] jobject obj) {
+    if (stop_run || !AutoSaveEnabled()) {
+        return JNI_FALSE;
+    }
+    {
+        // Under paused_mutex so a parked emulation thread re-checks its wait predicate
+        std::scoped_lock lock{paused_mutex};
+        ++autosave_requested;
+    }
+    running_cv.notify_all();
+    return JNI_TRUE;
+}
+
+jboolean Java_org_citra_citra_1emu_NativeLibrary_waitForAutoSave([[maybe_unused]] JNIEnv* env,
+                                                                 [[maybe_unused]] jobject obj,
+                                                                 jint timeout_ms) {
+    std::unique_lock lock{autosave_mutex};
+    return static_cast<jboolean>(
+        autosave_cv.wait_for(lock, std::chrono::milliseconds(timeout_ms),
+                             [] { return autosave_completed == autosave_requested; }));
 }
 
 void Java_org_citra_citra_1emu_NativeLibrary_stopEmulation([[maybe_unused]] JNIEnv* env,

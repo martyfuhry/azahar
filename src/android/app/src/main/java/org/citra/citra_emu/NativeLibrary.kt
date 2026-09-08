@@ -19,6 +19,7 @@ import android.text.method.LinkMovementMethod
 import android.view.Surface
 import android.view.View
 import android.widget.TextView
+import android.widget.Toast
 import androidx.annotation.Keep
 import androidx.annotation.StringRes
 import androidx.core.content.ContextCompat
@@ -27,6 +28,7 @@ import androidx.fragment.app.DialogFragment
 import androidx.preference.PreferenceManager
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import java.lang.ref.WeakReference
+import java.text.DateFormat
 import java.util.Date
 import org.citra.citra_emu.activities.EmulationActivity
 import org.citra.citra_emu.model.Game
@@ -192,6 +194,20 @@ object NativeLibrary {
      * Pauses emulation.
      */
     external fun pauseEmulation()
+
+    /**
+     * Asks the emulation thread to write the automatic "save on exit" state
+     * ([AUTOSAVE_SLOT]) at its next opportunity, waking it if it is paused. Cheap to call
+     * from lifecycle callbacks; pair with [waitForAutoSave] before the process may die.
+     * @return false if nothing will be saved (emulation not running or autosave disabled)
+     */
+    external fun requestAutoSave(): Boolean
+
+    /**
+     * Blocks until every [requestAutoSave] so far has been carried out, or the timeout passed.
+     * @return true if the emulation thread finished (successfully or not) with the request
+     */
+    external fun waitForAutoSave(timeoutMs: Int): Boolean
 
     /**
      * Stops emulation.
@@ -648,6 +664,65 @@ object NativeLibrary {
 
     const val SAVESTATE_SLOT_COUNT = 11
     const val QUICKSAVE_SLOT = 0
+
+    /** Mirrors Core::AutoSaveStateSlot; never shown in the slot pickers */
+    const val AUTOSAVE_SLOT = 1000
+
+    /** How long the UI thread waits for an autosave before letting the lifecycle proceed */
+    const val AUTOSAVE_WAIT_MS = 4000
+
+    /** Mirrors AutoSaveEvent in native.cpp */
+    object AutoSaveEvent {
+        const val OFFERED = 0
+        const val RESUMING = 1
+        const val BUILD_MISMATCH = 2
+    }
+
+    /**
+     * Called from the emulation thread right after boot when an autosave from the previous
+     * session was found. Only posts UI; a load is requested through [loadState] like any
+     * user-picked slot, so the emulation thread performs it and reports errors as usual.
+     */
+    @Keep
+    @JvmStatic
+    fun onAutoSaveState(event: Int, timeMillis: Long, buildName: String) {
+        val emulationActivity = sEmulationActivity.get()
+        if (emulationActivity == null) {
+            Log.warning("[NativeLibrary] EmulationActivity not present, ignoring autosave event")
+            return
+        }
+        val time = DateFormat.getDateTimeInstance().format(Date(timeMillis))
+        emulationActivity.runOnUiThread {
+            when (event) {
+                AutoSaveEvent.OFFERED -> {
+                    MaterialAlertDialogBuilder(emulationActivity)
+                        .setTitle(R.string.autosave_resume_title)
+                        .setMessage(
+                            emulationActivity.getString(R.string.autosave_resume_message, time)
+                        )
+                        .setPositiveButton(R.string.autosave_resume_load) { _, _ ->
+                            loadState(AUTOSAVE_SLOT)
+                        }
+                        .setNegativeButton(R.string.autosave_resume_skip, null)
+                        .show()
+                }
+
+                AutoSaveEvent.RESUMING -> Toast.makeText(
+                    emulationActivity,
+                    emulationActivity.getString(R.string.autosave_resuming, time),
+                    Toast.LENGTH_SHORT
+                ).show()
+
+                AutoSaveEvent.BUILD_MISMATCH -> Toast.makeText(
+                    emulationActivity,
+                    emulationActivity.getString(R.string.autosave_build_mismatch, buildName),
+                    Toast.LENGTH_LONG
+                ).show()
+
+                else -> Log.warning("[NativeLibrary] Unknown autosave event $event")
+            }
+        }
+    }
 
     external fun getSavestateInfo(): Array<SaveStateInfo>?
 

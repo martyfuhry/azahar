@@ -11,6 +11,18 @@
         <item>1</item>
     </integer-array>
 
+    <string-array name="autoSaveModeNames" translatable="true">
+        <item>@string/autosave_mode_off</item>
+        <item>@string/autosave_mode_ask</item>
+        <item>@string/autosave_mode_always</item>
+    </string-array>
+
+    <integer-array name="autoSaveModeValues" translatable="false">
+        <item>0</item>
+        <item>1</item>
+        <item>2</item>
+    </integer-array>
+
     <string-array name="landscapeLayouts">
         <item>@string/emulation_screen_layout_largescreen</item>
         <item>@string/emulation_screen_layout_single</item>

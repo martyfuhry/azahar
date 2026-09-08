@@ -179,6 +179,11 @@ class EmulationActivity : AppCompatActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
 
+        // Switching titles tears the running one down without going through the fragment's
+        // stop(), so give it the same save-on-exit treatment
+        if (NativeLibrary.requestAutoSave()) {
+            NativeLibrary.waitForAutoSave(NativeLibrary.AUTOSAVE_WAIT_MS)
+        }
         NativeLibrary.stopEmulation()
         NativeLibrary.playTimeManagerStop()
 

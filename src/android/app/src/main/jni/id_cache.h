@@ -28,6 +28,7 @@ jmethodID GetAlertPromptButton();
 jmethodID GetLandscapeScreenLayout();
 jmethodID GetPortraitScreenLayout();
 jmethodID GetExitEmulationActivity();
+jmethodID GetOnAutoSaveState();
 jmethodID GetRequestCameraPermission();
 jmethodID GetRequestMicPermission();
 jmethodID GetAddNetPlayMessage();

@@ -506,6 +506,11 @@ static const char* android_config_default_file_content = (BOOST_HANA_STRING(R"(
 # 0: Disabled, 1 (default): Enabled
 )") DECLARE_KEY(apply_region_free_patch) BOOST_HANA_STRING(R"(
 
+# Automatically save a state when emulation is sent to the background or shut down, and what
+# to do with it the next time the same application boots.
+# 0 (default): Off, 1: Ask before resuming, 2: Always resume
+)") DECLARE_KEY(autosave_mode) BOOST_HANA_STRING(R"(
+
 [Camera]
 # Which camera engine to use for the right outer camera
 # blank: a dummy camera that always returns black image

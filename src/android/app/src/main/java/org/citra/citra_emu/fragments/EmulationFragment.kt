@@ -558,9 +558,21 @@ class EmulationFragment :
     override fun onPause() {
         if (NativeLibrary.isRunning()) {
             emulationState.pause()
+            // Requested here rather than awaited: the emulation thread writes the state while
+            // Android walks us through the rest of the background transition
+            emulationState.requestAutoSave()
         }
         Choreographer.getInstance().removeFrameCallback(this)
         super.onPause()
+    }
+
+    override fun onStop() {
+        // After onStop the system may kill the process at any time, so this is the last
+        // chance to make sure the autosave requested in onPause has reached the disk
+        if (::emulationState.isInitialized) {
+            emulationState.awaitAutoSave()
+        }
+        super.onStop()
     }
 
     override fun onDetach() {
@@ -1678,6 +1690,10 @@ class EmulationFragment :
         private var state: State
         private var surface: Surface? = null
 
+        // Set once an autosave was requested for the current pause, so a stop() that follows
+        // (the activity finishing) does not write the same state a second time
+        private var autoSavedWhilePaused = false
+
         init {
             // Starting state is stopped.
             state = State.STOPPED
@@ -1700,10 +1716,38 @@ class EmulationFragment :
         fun stop() {
             if (state != State.STOPPED) {
                 Log.debug("[EmulationFragment] Stopping emulation.")
+                // Nothing has run since a pause-time autosave, so only save if there was none
+                if (!autoSavedWhilePaused && NativeLibrary.requestAutoSave()) {
+                    awaitAutoSave()
+                }
                 state = State.STOPPED
                 NativeLibrary.stopEmulation()
             } else {
                 Log.warning("[EmulationFragment] Stop called while already stopped.")
+            }
+        }
+
+        /**
+         * Asks the emulation thread for the "save on exit" state. Returns at once; the thread
+         * writes the state on its own (waking up if paused), and [awaitAutoSave] blocks until
+         * it has.
+         */
+        @Synchronized
+        fun requestAutoSave(): Boolean {
+            if (state == State.STOPPED || autoSavedWhilePaused) {
+                return false
+            }
+            autoSavedWhilePaused = NativeLibrary.requestAutoSave()
+            return autoSavedWhilePaused
+        }
+
+        /** Blocks until every requested autosave has been written, bounded by a timeout */
+        fun awaitAutoSave() {
+            if (!NativeLibrary.waitForAutoSave(NativeLibrary.AUTOSAVE_WAIT_MS)) {
+                Log.warning(
+                    "[EmulationFragment] Autosave did not finish within " +
+                        "${NativeLibrary.AUTOSAVE_WAIT_MS} ms"
+                )
             }
         }
 
@@ -1716,6 +1760,7 @@ class EmulationFragment :
 
                 NativeLibrary.pauseEmulation()
                 NativeLibrary.playTimeManagerStop()
+                autoSavedWhilePaused = false
             } else {
                 Log.warning("[EmulationFragment] Pause called while already paused.")
             }
@@ -1729,6 +1774,8 @@ class EmulationFragment :
 
                 NativeLibrary.unPauseEmulation()
                 NativeLibrary.playTimeManagerStart(NativeLibrary.playTimeManagerGetCurrentTitleId())
+                // The game moves on from here, so the pause-time autosave no longer covers it
+                autoSavedWhilePaused = false
             } else {
                 Log.warning("[EmulationFragment] Unpause called while already running.")
             }
