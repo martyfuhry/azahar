@@ -23,6 +23,9 @@ add_executable(tests
     audio_core/merryhime_3ds_audio/merry_audio/service_fixture.cpp
     audio_core/merryhime_3ds_audio/merry_audio/service_fixture.h
     audio_core/merryhime_3ds_audio/audio_test_biquad_filter.cpp
+    bench/memory.cpp
+    bench/time_stretch.cpp
+    bench/zstd_stream.cpp
 )
 
 create_target_directory_groups(tests)
@@ -39,9 +42,11 @@ if (ENABLE_LIBRETRO)
     target_link_libraries(tests PRIVATE $<TARGET_OBJECTS:citra_libretro_common>)
 endif()
 
-add_test(NAME tests COMMAND tests)
+# Benchmarks ([bench]) are opt-in: run them explicitly with
+#   tests "[bench]" --benchmark-samples 20 --benchmark-no-analysis -r xml -o bench.xml
+add_test(NAME tests COMMAND tests "~[bench]")
 if(NOT ANDROID AND (CMAKE_SYSTEM_NAME STREQUAL CMAKE_HOST_SYSTEM_NAME))
-    catch_discover_tests(tests)
+    catch_discover_tests(tests TEST_SPEC "~[bench]")
 endif()
 
 
