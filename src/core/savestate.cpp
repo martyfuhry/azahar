@@ -4,7 +4,9 @@
 
 #include <charconv>
 #include <chrono>
-#include <sstream>
+#include <cstring>
+#include <istream>
+#include <ostream>
 #include <cryptopp/hex.h>
 #include <fmt/ranges.h>
 #include "common/archives.h"
@@ -12,7 +14,7 @@
 #include "common/logging/log.h"
 #include "common/scm_rev.h"
 #include "common/swap.h"
-#include "common/zstd_compression.h"
+#include "common/zstd_stream.h"
 #include "core/core.h"
 #include "core/loader/loader.h"
 #include "core/movie.h"
@@ -210,6 +212,65 @@ AutoSaveResumeStatus CheckAutoSaveState(u64 program_id, u64 movie_id, SaveStateI
     return ClassifyAutoSaveState(autosave, GetLastNormalBootTime(program_id));
 }
 
+static CSTHeader MakeHeader(u64 title_id) {
+    CSTHeader header{};
+    header.filetype = header_magic_bytes;
+    header.program_id = title_id;
+    std::string rev_bytes;
+    CryptoPP::StringSource ss(Common::g_scm_rev, true,
+                              new CryptoPP::HexDecoder(new CryptoPP::StringSink(rev_bytes)));
+    std::memcpy(header.revision.data(), rev_bytes.data(),
+                std::min(rev_bytes.size(), sizeof(header.revision)));
+    header.time = std::chrono::duration_cast<std::chrono::seconds>(
+                      std::chrono::system_clock::now().time_since_epoch())
+                      .count();
+    const std::string build_fullname = Common::g_build_fullname;
+    std::memcpy(header.build_name.data(), build_fullname.c_str(),
+                std::min(build_fullname.length(), sizeof(header.build_name) - 1));
+    const std::string build_version = Common::g_build_version;
+    std::memcpy(header.build_version.data(), build_version.c_str(),
+                std::min(build_version.length(), sizeof(header.build_version) - 1));
+    return header;
+}
+
+/**
+ * Serializes the system through a Zstandard stream into `sink`, chunk by chunk. A New 3DS
+ * state serializes to a few hundred MiB, so it is never held in memory as a whole: the
+ * frontend that autosaves in the background on a memory-tight phone would otherwise provoke
+ * the very low-memory kill it is trying to insure against.
+ */
+static void SerializeCompressed(const System& system,
+                                Common::Compression::ZSTDOutputStreamBuf::Sink sink) {
+    Common::Compression::ZSTDOutputStreamBuf compressor{std::move(sink)};
+    {
+        std::ostream stream{&compressor};
+        oarchive oa{stream};
+        oa & system;
+        if (!stream) {
+            throw std::runtime_error("Could not write the save state");
+        }
+    }
+    if (!compressor.Finish()) {
+        throw std::runtime_error("Could not compress the save state");
+    }
+}
+
+/// Deserializes the system from a Zstandard stream pulled from `source`, chunk by chunk
+static void DeserializeCompressed(System& system,
+                                  Common::Compression::ZSTDInputStreamBuf::Source source) {
+    Common::Compression::ZSTDInputStreamBuf decompressor{std::move(source)};
+    std::istream stream{&decompressor};
+    try {
+        iarchive ia{stream};
+        ia & system;
+    } catch (const std::exception&) {
+        if (decompressor.Failed()) {
+            throw std::runtime_error("The save state is corrupt or truncated");
+        }
+        throw;
+    }
+}
+
 void System::SaveState(u32 slot) const {
     if (app_loader) {
         if (!app_loader->SupportsSaveStates()) {
@@ -217,44 +278,40 @@ void System::SaveState(u32 slot) const {
         }
     }
 
-    std::ostringstream sstream{std::ios_base::binary};
-    // Serialize
-    oarchive oa{sstream};
-    oa&* this;
-
-    const std::string& str{sstream.str()};
-    const auto data = std::span<const u8>{reinterpret_cast<const u8*>(str.data()), str.size()};
-    auto buffer = Common::Compression::CompressDataZSTDDefault(data);
-
     const u64 movie_id = movie.GetCurrentMovieID();
     const auto path = GetSaveStatePath(title_id, movie_id, slot);
     if (!FileUtil::CreateFullPath(path)) {
         throw std::runtime_error("Could not create path " + path);
     }
 
-    FileUtil::IOFile file(path, "wb");
-    if (!file) {
-        throw std::runtime_error("Could not open file " + path);
+    // Written under a temporary name and moved into place once complete, so a save that fails
+    // part-way (or a process killed during it) leaves the previous state in that slot intact
+    const auto temp_path = path + ".tmp";
+    {
+        FileUtil::IOFile file(temp_path, "wb");
+        if (!file) {
+            throw std::runtime_error("Could not open file " + temp_path);
+        }
+        const CSTHeader header = MakeHeader(title_id);
+        if (file.WriteBytes(&header, sizeof(header)) != sizeof(header)) {
+            throw std::runtime_error("Could not write to file " + temp_path);
+        }
+        try {
+            SerializeCompressed(*this, [&file](std::span<const u8> chunk) {
+                return file.WriteBytes(chunk.data(), chunk.size()) == chunk.size();
+            });
+        } catch (...) {
+            file.Close();
+            FileUtil::Delete(temp_path);
+            throw;
+        }
     }
-
-    CSTHeader header{};
-    header.filetype = header_magic_bytes;
-    header.program_id = title_id;
-    std::string rev_bytes;
-    CryptoPP::StringSource ss(Common::g_scm_rev, true,
-                              new CryptoPP::HexDecoder(new CryptoPP::StringSink(rev_bytes)));
-    std::memcpy(header.revision.data(), rev_bytes.data(), sizeof(header.revision));
-    header.time = std::chrono::duration_cast<std::chrono::seconds>(
-                      std::chrono::system_clock::now().time_since_epoch())
-                      .count();
-    const std::string build_fullname = Common::g_build_fullname;
-    std::memset(header.build_name.data(), 0, sizeof(header.build_name));
-    std::memcpy(header.build_name.data(), build_fullname.c_str(),
-                std::min(build_fullname.length(), sizeof(header.build_name) - 1));
-
-    if (file.WriteBytes(&header, sizeof(header)) != sizeof(header) ||
-        file.WriteBytes(buffer.data(), buffer.size()) != buffer.size()) {
-        throw std::runtime_error("Could not write to file " + path);
+    // Rename replaces on every native filesystem; only fall back to delete-then-rename for
+    // backends that refuse to overwrite, so the old state is kept as long as possible
+    if (!FileUtil::Rename(temp_path, path) &&
+        !(FileUtil::Delete(path) && FileUtil::Rename(temp_path, path))) {
+        FileUtil::Delete(temp_path);
+        throw std::runtime_error("Could not move " + temp_path + " to " + path);
     }
 }
 
@@ -272,74 +329,38 @@ void System::LoadState(u32 slot) {
     const u64 movie_id = movie.GetCurrentMovieID();
     const auto path = GetSaveStatePath(title_id, movie_id, slot);
 
-    std::vector<u8> decompressed;
-    {
-        std::vector<u8> buffer(FileUtil::GetSize(path) - sizeof(CSTHeader));
-
-        FileUtil::IOFile file(path, "rb");
-
-        // load header
-        CSTHeader header;
-        if (file.ReadBytes(&header, sizeof(header)) != sizeof(header)) {
-            throw std::runtime_error("Could not read from file at " + path);
-        }
-
-        // validate header
-        SaveStateInfo info;
-        info.slot = slot;
-        if (!ValidateSaveState(header, info, title_id, movie_id) ||
-            info.status == SaveStateInfo::ValidationStatus::BuildMismatch) {
-            throw std::runtime_error("Invalid savestate");
-        }
-
-        if (file.ReadBytes(buffer.data(), buffer.size()) != buffer.size()) {
-            throw std::runtime_error("Could not read from file at " + path);
-        }
-        decompressed = Common::Compression::DecompressDataZSTD(buffer);
+    FileUtil::IOFile file(path, "rb");
+    if (!file) {
+        throw std::runtime_error("Could not open file " + path);
     }
-    std::istringstream sstream{
-        std::string{reinterpret_cast<char*>(decompressed.data()), decompressed.size()},
-        std::ios_base::binary};
-    decompressed.clear();
+
+    // load header
+    CSTHeader header;
+    if (file.ReadBytes(&header, sizeof(header)) != sizeof(header)) {
+        throw std::runtime_error("Could not read from file at " + path);
+    }
+
+    // validate header
+    SaveStateInfo info;
+    info.slot = slot;
+    if (!ValidateSaveState(header, info, title_id, movie_id) ||
+        info.status == SaveStateInfo::ValidationStatus::BuildMismatch) {
+        throw std::runtime_error("Invalid savestate");
+    }
 
     // Deserialize
-    iarchive ia{sstream};
-    ia&* this;
+    DeserializeCompressed(
+        *this, [&file](std::span<u8> chunk) { return file.ReadBytes(chunk.data(), chunk.size()); });
 }
 
 std::vector<u8> System::SaveStateBuffer() const {
-    std::ostringstream sstream{std::ios_base::binary};
-    // Serialize
-    oarchive oa{sstream};
-    oa&* this;
-
-    const std::string& str{sstream.str()};
-    const auto data = std::span<const u8>{reinterpret_cast<const u8*>(str.data()), str.size()};
-    auto buffer = Common::Compression::CompressDataZSTDDefault(data);
-
-    CSTHeader header{};
-    header.filetype = header_magic_bytes;
-    header.program_id = title_id;
-    std::string rev_bytes;
-    CryptoPP::StringSource ss(Common::g_scm_rev, true,
-                              new CryptoPP::HexDecoder(new CryptoPP::StringSink(rev_bytes)));
-    std::memcpy(header.revision.data(), rev_bytes.data(), sizeof(header.revision));
-    header.time = std::chrono::duration_cast<std::chrono::seconds>(
-                      std::chrono::system_clock::now().time_since_epoch())
-                      .count();
-    const std::string build_fullname = Common::g_build_fullname;
-    std::memset(header.build_name.data(), 0, sizeof(header.build_name));
-    std::memcpy(header.build_name.data(), build_fullname.c_str(),
-                std::min(build_fullname.length(), sizeof(header.build_name) - 1));
-
-    const std::string build_version = Common::g_build_version;
-    std::memset(header.build_version.data(), 0, sizeof(header.build_version));
-    std::memcpy(header.build_version.data(), build_version.c_str(),
-                std::min(build_version.length(), sizeof(header.build_version) - 1));
-
-    std::vector<u8> result((u8*)&header, (u8*)&header + sizeof(header));
-    std::copy(buffer.begin(), buffer.end(), std::back_inserter(result));
-
+    const CSTHeader header = MakeHeader(title_id);
+    std::vector<u8> result(reinterpret_cast<const u8*>(&header),
+                           reinterpret_cast<const u8*>(&header) + sizeof(header));
+    SerializeCompressed(*this, [&result](std::span<const u8> chunk) {
+        result.insert(result.end(), chunk.begin(), chunk.end());
+        return true;
+    });
     return result;
 }
 
@@ -351,7 +372,7 @@ bool System::LoadStateBuffer(std::vector<u8> buffer) {
         return false;
     }
 
-    header = *((CSTHeader*)buffer.data());
+    std::memcpy(&header, buffer.data(), sizeof(header));
 
     if (header.filetype != header_magic_bytes) {
         LOG_ERROR(Core, "Invalid save state");
@@ -370,17 +391,14 @@ bool System::LoadStateBuffer(std::vector<u8> buffer) {
         return false;
     }
 
-    std::vector<u8> state(buffer.begin() + sizeof(CSTHeader), buffer.end());
-    auto decompressed = Common::Compression::DecompressDataZSTD(state);
-
-    std::istringstream sstream{
-        std::string{reinterpret_cast<char*>(decompressed.data()), decompressed.size()},
-        std::ios_base::binary};
-    decompressed.clear();
-
     // Deserialize
-    iarchive ia{sstream};
-    ia&* this;
+    std::size_t offset = sizeof(CSTHeader);
+    DeserializeCompressed(*this, [&buffer, &offset](std::span<u8> chunk) {
+        const std::size_t count = std::min(chunk.size(), buffer.size() - offset);
+        std::memcpy(chunk.data(), buffer.data() + offset, count);
+        offset += count;
+        return count;
+    });
 
     return true;
 }
