@@ -165,6 +165,25 @@ public:
     }
 
     /**
+     * Request that the renderer's disk resources that otherwise only reach the disk at shutdown
+     * (the Vulkan driver pipeline cache) be written on the next RunLoop iteration. Frontends
+     * call this when the app is about to be backgrounded, where the process may be killed
+     * without ever shutting down. RunLoop() also flushes on its own every few minutes. Safe to
+     * call from any thread.
+     */
+    void RequestPipelineCacheFlush() {
+        pipeline_cache_flush_requested = true;
+    }
+
+    /**
+     * Carry out a pending RequestPipelineCacheFlush(), or the periodic one when it is due,
+     * now. RunLoop() calls this itself; a frontend that parks the emulation thread instead of
+     * running RunLoop() calls it from that thread before parking. Cheap when there is nothing
+     * new to write.
+     */
+    void FlushPipelineCacheIfRequested();
+
+    /**
      * Whether a Signal::Save/Signal::Load is still waiting to be picked up by RunLoop(), or a
      * picked-up one has not yet been carried out (or abandoned after its timeout). Lets a
      * frontend that is about to park the emulation thread keep pumping RunLoop() until a
@@ -534,6 +553,11 @@ private:
 
     /// Set by RequestClockResync(), consumed by RunLoop() on the emulation thread
     std::atomic_bool clock_resync_requested{};
+
+    /// Set by RequestPipelineCacheFlush(), consumed by FlushPipelineCacheIfRequested()
+    std::atomic_bool pipeline_cache_flush_requested{};
+    /// When the pipeline cache was last flushed (or the title booted); drives the periodic flush
+    std::chrono::steady_clock::time_point last_pipeline_cache_flush{};
 
     SaveStateStatus save_state_status = SaveStateStatus::NONE;
     SaveStateStatus save_state_request_status = SaveStateStatus::NONE;
