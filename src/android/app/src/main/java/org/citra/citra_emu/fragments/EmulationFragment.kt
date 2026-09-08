@@ -530,6 +530,7 @@ class EmulationFragment :
     override fun onResume() {
         super.onResume()
         Choreographer.getInstance().postFrameCallback(this)
+        resumePerfStatsUpdates()
         if (NativeLibrary.isRunning()) {
             emulationState.unpause()
 
@@ -563,6 +564,9 @@ class EmulationFragment :
             emulationState.requestAutoSave()
         }
         Choreographer.getInstance().removeFrameCallback(this)
+        // The overlay timer would otherwise keep waking the UI thread (and crossing JNI) once a
+        // second for as long as the game sits in the background
+        suspendPerfStatsUpdates()
         super.onPause()
     }
 
@@ -584,6 +588,8 @@ class EmulationFragment :
         if (::emulationState.isInitialized && requireActivity().isFinishing) {
             emulationState.stop()
         }
+        suspendPerfStatsUpdates()
+        perfStatsUpdater = null
         EmulationLifecycleUtil.removeHook(onPause)
         EmulationLifecycleUtil.removeHook(onShutdown)
         if (gameFd != null) {
@@ -1494,9 +1500,8 @@ class EmulationFragment :
     }
 
     fun updateShowPerformanceOverlay() {
-        if (perfStatsUpdater != null) {
-            perfStatsUpdateHandler.removeCallbacks(perfStatsUpdater!!)
-        }
+        suspendPerfStatsUpdates()
+        perfStatsUpdater = null
 
         if (BooleanSetting.PERF_OVERLAY_ENABLE.boolean) {
             @Suppress("UnusedVariable")
@@ -1583,11 +1588,25 @@ class EmulationFragment :
                 }
                 perfStatsUpdateHandler.postDelayed(perfStatsUpdater!!, 1000)
             }
-            perfStatsUpdateHandler.post(perfStatsUpdater!!)
+            resumePerfStatsUpdates()
             binding.performanceOverlayShowText.visibility = View.VISIBLE
         } else {
             binding.performanceOverlayShowText.visibility = View.GONE
         }
+    }
+
+    /**
+     * Starts the once-a-second overlay refresh if the overlay is on. Safe to call repeatedly;
+     * the previous posting is cancelled first so the runnable never runs twice per tick.
+     */
+    private fun resumePerfStatsUpdates() {
+        val updater = perfStatsUpdater ?: return
+        perfStatsUpdateHandler.removeCallbacks(updater)
+        perfStatsUpdateHandler.post(updater)
+    }
+
+    private fun suspendPerfStatsUpdates() {
+        perfStatsUpdater?.let { perfStatsUpdateHandler.removeCallbacks(it) }
     }
 
     private fun updateStatsPosition(position: Int) {
