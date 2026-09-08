@@ -138,6 +138,7 @@ option(ENABLE_OPENAL "Enables the OpenAL audio backend" ON)
 CMAKE_DEPENDENT_OPTION(ENABLE_LIBUSB "Enable libusb for GameCube Adapter support" ON "NOT IOS" OFF)
 
 CMAKE_DEPENDENT_OPTION(ENABLE_SOFTWARE_RENDERER "Enables the software renderer" ON "NOT ANDROID" OFF)
+CMAKE_DEPENDENT_OPTION(ENABLE_BENCH "Enable generating the headless citra_bench executable" OFF "NOT ANDROID AND NOT IOS AND ENABLE_SOFTWARE_RENDERER" OFF)
 CMAKE_DEPENDENT_OPTION(ENABLE_OPENGL "Enables the OpenGL renderer" ${DEFAULT_ENABLE_OPENGL} "NOT APPLE" OFF)
 # NetBSD doesn't support Vulkan yet, remove this check when it does.
 CMAKE_DEPENDENT_OPTION(ENABLE_VULKAN "Enables the Vulkan renderer" ON "NOT (BSD MATCHES \"NetBSD\")" OFF)
