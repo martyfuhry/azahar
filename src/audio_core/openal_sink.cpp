@@ -1,4 +1,4 @@
-// Copyright 2023-2024 Citra Emulator Project / Azahar Emulator Project
+// Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
@@ -141,6 +141,23 @@ unsigned int OpenALSink::GetNativeSampleRate() const {
 
 void OpenALSink::SetCallback(std::function<void(s16*, std::size_t)> cb) {
     impl->cb = cb;
+}
+
+void OpenALSink::SetPaused(bool paused) {
+    if (!impl->source) {
+        return;
+    }
+    // A paused source stops pulling from the callback buffer; the mixer thread keeps running
+    // but has nothing to do for us.
+    if (paused) {
+        alSourcePause(impl->source);
+    } else {
+        alSourcePlay(impl->source);
+    }
+    if (alGetError() != AL_NO_ERROR) {
+        LOG_ERROR(Audio_Sink, "{} failed: {}", paused ? "alSourcePause" : "alSourcePlay",
+                  alGetError());
+    }
 }
 
 ALsizei OpenALSink::Impl::Callback(void* impl_, void* buffer, ALsizei buffer_size_in_bytes) {

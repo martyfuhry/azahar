@@ -18,6 +18,8 @@ DspInterface::DspInterface(Core::System& system_) : system(system_) {}
 DspInterface::~DspInterface() = default;
 
 void DspInterface::SetSink(AudioCore::SinkType sink_type, std::string_view audio_device) {
+    std::scoped_lock lock{sink_mutex};
+
     // Dispose of the current sink first to avoid contention.
     sink.reset();
 
@@ -25,6 +27,12 @@ void DspInterface::SetSink(AudioCore::SinkType sink_type, std::string_view audio
     sink->SetCallback(
         [this](s16* buffer, std::size_t num_frames) { OutputCallback(buffer, num_frames); });
     time_stretcher.SetOutputSampleRate(sink->GetNativeSampleRate());
+
+    // Settings can be re-applied while the emulator is paused (Android reloads them on the way
+    // back from the settings activity); a fresh sink must not start streaming silence.
+    if (output_paused.load(std::memory_order_relaxed)) {
+        sink->SetPaused(true);
+    }
 }
 
 Sink& DspInterface::GetSink() {
@@ -34,6 +42,16 @@ Sink& DspInterface::GetSink() {
 
 void DspInterface::EnableStretching(bool enable) {
     enable_time_stretching = enable;
+}
+
+void DspInterface::PauseOutput(bool paused) {
+    std::scoped_lock lock{sink_mutex};
+    if (output_paused.exchange(paused, std::memory_order_relaxed) == paused) {
+        return;
+    }
+    if (sink) {
+        sink->SetPaused(paused);
+    }
 }
 
 void DspInterface::OutputFrame(StereoFrame16 frame) {

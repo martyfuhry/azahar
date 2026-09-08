@@ -47,6 +47,14 @@ public:
      * @param num_samples Number of stereo samples
      */
     virtual void PushSamples(const void* data, std::size_t num_samples) {}
+
+    /**
+     * Stop or restart the sink's output stream. While paused the sink must not request samples
+     * (its device callback thread should be idle) so that a paused emulator costs no CPU. Sinks
+     * that cannot pause simply keep running; the DSP mutes its output in that case.
+     * @param paused true to stop the output stream, false to start it again.
+     */
+    virtual void SetPaused(bool paused) {}
 };
 
 } // namespace AudioCore

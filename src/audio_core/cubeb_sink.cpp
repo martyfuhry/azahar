@@ -2,6 +2,9 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <algorithm>
+#include <array>
+#include <atomic>
 #include <cstdarg>
 #include <cstring>
 #include <mutex>
@@ -16,8 +19,23 @@ namespace AudioCore {
 struct CubebSink::Impl {
     cubeb* ctx = nullptr;
     cubeb_stream* stream = nullptr;
+    cubeb_devid output_device = nullptr;
+    u32 latency_frames = 0;
+
+    /// Serializes stream stop/start/reopen against each other. cubeb serializes its own
+    /// stream_start/stream_stop internally, but reopening replaces `stream` and must not race a
+    /// concurrent SetPaused from another thread.
+    std::mutex control_mutex;
+    /// Whether the last SetPaused() request was for a stopped stream.
+    bool paused = false;
+    /// Set by the state callback when cubeb gives up on the stream (CUBEB_STATE_ERROR); the next
+    /// start reopens the stream instead of trying to start a dead one.
+    std::atomic<bool> errored = false;
 
     std::function<void(s16*, std::size_t)> cb;
+
+    bool OpenStream();
+    void CloseStream();
 
     static long DataCallback(cubeb_stream* stream, void* user_data, const void* input_buffer,
                              void* output_buffer, long num_frames);
@@ -48,8 +66,8 @@ CubebSink::CubebSink(std::string_view target_device_name) : impl(std::make_uniqu
         LOG_WARNING(Audio_Sink,
                     "Error getting minimum output latency, falling back to default latency.");
     }
+    impl->latency_frames = std::max(512u, minimum_latency);
 
-    cubeb_devid output_device = nullptr;
     if (target_device_name != auto_device_name && !target_device_name.empty()) {
         cubeb_device_collection collection;
         if (cubeb_enumerate_devices(impl->ctx, CUBEB_DEVICE_TYPE_OUTPUT, &collection) == CUBEB_OK) {
@@ -60,7 +78,7 @@ CubebSink::CubebSink(std::string_view target_device_name) : impl(std::make_uniqu
                            target_device_name == info.friendly_name;
                 })};
             if (device != collection_end) {
-                output_device = device->devid;
+                impl->output_device = device->devid;
             }
             cubeb_device_collection_destroy(impl->ctx, &collection);
         } else {
@@ -69,10 +87,42 @@ CubebSink::CubebSink(std::string_view target_device_name) : impl(std::make_uniqu
         }
     }
 
-    auto stream_err = cubeb_stream_init(impl->ctx, &impl->stream, "AzaharAudio", nullptr, nullptr,
-                                        output_device, &params, std::max(512u, minimum_latency),
-                                        &Impl::DataCallback, &Impl::StateCallback, impl.get());
+    std::scoped_lock lock{impl->control_mutex};
+    if (!impl->OpenStream()) {
+        return;
+    }
+
+    if (cubeb_stream_start(impl->stream) != CUBEB_OK) {
+        LOG_CRITICAL(Audio_Sink, "Error starting cubeb stream");
+        return;
+    }
+}
+
+CubebSink::~CubebSink() {
+    {
+        std::scoped_lock lock{impl->control_mutex};
+        impl->CloseStream();
+    }
+
+    if (impl->ctx) {
+        cubeb_destroy(impl->ctx);
+    }
+}
+
+bool CubebSink::Impl::OpenStream() {
+    cubeb_stream_params params = {
+        .format = CUBEB_SAMPLE_S16LE,
+        .rate = native_sample_rate,
+        .channels = 2,
+        .layout = CUBEB_LAYOUT_STEREO,
+    };
+
+    errored = false;
+    auto stream_err =
+        cubeb_stream_init(ctx, &stream, "AzaharAudio", nullptr, nullptr, output_device, &params,
+                          latency_frames, &DataCallback, &StateCallback, this);
     if (stream_err != CUBEB_OK) {
+        stream = nullptr;
         switch (stream_err) {
         case CUBEB_ERROR:
         default:
@@ -85,26 +135,20 @@ CubebSink::CubebSink(std::string_view target_device_name) : impl(std::make_uniqu
             LOG_CRITICAL(Audio_Sink, "Device unavailable when initializing cubeb stream");
             break;
         }
-        return;
+        return false;
     }
-
-    if (cubeb_stream_start(impl->stream) != CUBEB_OK) {
-        LOG_CRITICAL(Audio_Sink, "Error starting cubeb stream");
-        return;
-    }
+    return true;
 }
 
-CubebSink::~CubebSink() {
-    if (impl->stream) {
-        if (cubeb_stream_stop(impl->stream) != CUBEB_OK) {
-            LOG_ERROR(Audio_Sink, "Error stopping cubeb stream.");
-        }
-        cubeb_stream_destroy(impl->stream);
+void CubebSink::Impl::CloseStream() {
+    if (!stream) {
+        return;
     }
-
-    if (impl->ctx) {
-        cubeb_destroy(impl->ctx);
+    if (cubeb_stream_stop(stream) != CUBEB_OK) {
+        LOG_ERROR(Audio_Sink, "Error stopping cubeb stream.");
     }
+    cubeb_stream_destroy(stream);
+    stream = nullptr;
 }
 
 unsigned int CubebSink::GetNativeSampleRate() const {
@@ -113,6 +157,39 @@ unsigned int CubebSink::GetNativeSampleRate() const {
 
 void CubebSink::SetCallback(std::function<void(s16*, std::size_t)> cb) {
     impl->cb = cb;
+}
+
+void CubebSink::SetPaused(bool paused) {
+    std::scoped_lock lock{impl->control_mutex};
+    if (!impl->ctx || paused == impl->paused) {
+        return;
+    }
+    impl->paused = paused;
+
+    if (paused) {
+        // cubeb_stream_stop is synchronous with respect to the data callback (AAudio: requestPause
+        // returns only once no more callbacks will fire; PulseAudio corks and waits), so a stop
+        // issued right after a start cannot leave a callback running on a stopped stream.
+        if (impl->stream && cubeb_stream_stop(impl->stream) != CUBEB_OK) {
+            LOG_ERROR(Audio_Sink, "Error stopping cubeb stream, reopening on resume.");
+            impl->errored = true;
+        }
+        return;
+    }
+
+    // A stream that lost its device while stopped (AAudio route change, headphones unplugged)
+    // reports CUBEB_STATE_ERROR and can never be started again; reopen it instead.
+    if (impl->stream && !impl->errored && cubeb_stream_start(impl->stream) == CUBEB_OK) {
+        return;
+    }
+    LOG_WARNING(Audio_Sink, "cubeb stream unusable on resume, reopening.");
+    impl->CloseStream();
+    if (!impl->OpenStream()) {
+        return;
+    }
+    if (cubeb_stream_start(impl->stream) != CUBEB_OK) {
+        LOG_CRITICAL(Audio_Sink, "Error starting reopened cubeb stream");
+    }
 }
 
 long CubebSink::Impl::DataCallback(cubeb_stream* stream, void* user_data, const void* input_buffer,
@@ -143,6 +220,9 @@ void CubebSink::Impl::StateCallback(cubeb_stream* stream, void* user_data, cubeb
         break;
     case CUBEB_STATE_ERROR:
         LOG_CRITICAL(Audio_Sink, "Cubeb Audio Stream Errored");
+        if (auto* impl = static_cast<Impl*>(user_data)) {
+            impl->errored = true;
+        }
         break;
     }
 }
