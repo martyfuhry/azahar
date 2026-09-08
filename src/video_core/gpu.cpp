@@ -142,6 +142,10 @@ void GPU::ClearAll(bool flush) {
     impl->rasterizer->ClearAll(flush);
 }
 
+void GPU::TrimCaches() {
+    impl->rasterizer->TrimCaches();
+}
+
 void GPU::Execute(const Service::GSP::Command& command) {
     using Service::GSP::CommandId;
     auto& regs = impl->pica.regs;

@@ -841,6 +841,10 @@ void RasterizerOpenGL::ClearAll(bool flush) {
     res_cache.ClearAll(flush);
 }
 
+void RasterizerOpenGL::TrimCaches() {
+    res_cache.UnregisterAll();
+}
+
 bool RasterizerOpenGL::AccelerateDisplayTransfer(const Pica::DisplayTransferConfig& config) {
     return res_cache.AccelerateDisplayTransfer(config);
 }

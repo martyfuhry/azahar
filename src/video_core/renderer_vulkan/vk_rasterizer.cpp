@@ -779,6 +779,10 @@ void RasterizerVulkan::ClearAll(bool flush) {
     res_cache.ClearAll(flush);
 }
 
+void RasterizerVulkan::TrimCaches() {
+    res_cache.UnregisterAll();
+}
+
 bool RasterizerVulkan::AccelerateDisplayTransfer(const Pica::DisplayTransferConfig& config) {
     return res_cache.AccelerateDisplayTransfer(config);
 }

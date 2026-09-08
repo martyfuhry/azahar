@@ -138,6 +138,12 @@ public:
     /// Clear all cached resources tracked by this cache manager
     void ClearAll(bool flush);
 
+    /// Flushes every cached surface back to guest memory and destroys them, releasing the GPU
+    /// memory they hold. Everything is recreated the next time it is drawn or sampled, so this
+    /// is what a frontend under memory pressure gives up first. Needs a live scheduler: it
+    /// waits for the GPU before the surfaces are freed.
+    void UnregisterAll();
+
 private:
     /// Iterate over all page indices in a range
     template <typename Func>
@@ -203,9 +209,6 @@ private:
 
     /// Remove surface from the cache
     void UnregisterSurface(SurfaceId surface);
-
-    /// Unregisters all surfaces from the cache
-    void UnregisterAll();
 
     /// Increase/decrease the number of surface in pages touching the specified region
     void UpdatePagesCachedCount(PAddr addr, u32 size, int delta);
