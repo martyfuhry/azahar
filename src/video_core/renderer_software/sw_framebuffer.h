@@ -1,4 +1,4 @@
-// Copyright 2017 Citra Emulator Project
+// Copyright 2017-2026 Citra Emulator Project / Azahar Emulator Project
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
@@ -50,9 +50,9 @@ public:
 private:
     Memory::MemorySystem& memory;
     const Pica::FramebufferRegs& regs;
-    PAddr color_addr;
+    PAddr color_addr{};
     u8* color_buffer{};
-    PAddr depth_addr;
+    PAddr depth_addr{};
     u8* depth_buffer{};
 };
 
