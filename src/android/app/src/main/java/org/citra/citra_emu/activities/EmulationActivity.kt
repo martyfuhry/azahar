@@ -210,6 +210,13 @@ class EmulationActivity : AppCompatActivity() {
             // that is already running; there is nothing to launch.
             return
         }
+        if (targetsCurrentGame(intent)) {
+            // Launchers and shortcuts re-send the launch intent to bring a singleTop activity
+            // forward (the AYN launcher does this on every lid open). The title is already
+            // running (or booting): resume in place instead of tearing it down and reloading.
+            Log.info("[EmulationActivity] Re-sent launch intent for the running title, resuming")
+            return
+        }
         setIntent(intent)
 
         // Switching titles tears the running one down without going through the fragment's
@@ -235,6 +242,46 @@ class EmulationActivity : AppCompatActivity() {
         val navHostFragment =
             supportFragmentManager.findFragmentById(R.id.fragment_container) as NavHostFragment
         navHostFragment.navController.setGraph(R.navigation.emulation_navigation, intent.extras)
+    }
+
+    /**
+     * Whether [newIntent] would boot the very title this activity is already running. Cheap
+     * checks first (same URI or same parcelled game); only when those differ is the incoming
+     * file opened to read its title id and compared with the core's.
+     */
+    private fun targetsCurrentGame(newIntent: Intent): Boolean {
+        val current = intent ?: return false
+        val newGame = newIntent.extras?.let {
+            BundleCompat.getParcelable(it, "game", Game::class.java)
+        }
+        val currentGame = current.extras?.let {
+            BundleCompat.getParcelable(it, "game", Game::class.java)
+        }
+        if (newGame != null && currentGame != null) {
+            return newGame.path == currentGame.path ||
+                (newGame.titleId != 0L && newGame.titleId == currentGame.titleId)
+        }
+        val newUri = newIntent.data ?: newIntent.getStringExtra("SelectedGame")?.toUri()
+        val currentUri = current.data ?: current.getStringExtra("SelectedGame")?.toUri()
+        if (newUri != null && newUri == currentUri) {
+            return true
+        }
+        if (!NativeLibrary.isRunning()) {
+            return false
+        }
+        val runningTitleId = NativeLibrary.getRunningTitleId()
+        if (runningTitleId == 0L) {
+            return false
+        }
+        val newTitleId = newGame?.titleId?.takeIf { it != 0L } ?: newUri?.let { uri ->
+            val path = when {
+                BuildUtil.isGooglePlayBuild -> uri.toString()
+                uri.scheme == "file" -> uri.path
+                else -> "!" + NativeLibrary.getNativePath(uri)
+            }
+            path?.let { NativeLibrary.getTitleId(it) }
+        }
+        return newTitleId == runningTitleId
     }
 
     // On some devices, the system bars will not disappear on first boot or after some
