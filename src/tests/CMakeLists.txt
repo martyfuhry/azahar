@@ -3,6 +3,7 @@ add_executable(tests
     common/file_util.cpp
     common/param_package.cpp
     core/core_timing.cpp
+    core/savestate.cpp
     core/file_sys/path_parser.cpp
     core/hle/kernel/hle_ipc.cpp
     core/hle/kernel/shared_page.cpp
