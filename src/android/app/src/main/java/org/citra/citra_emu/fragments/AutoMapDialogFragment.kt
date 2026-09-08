@@ -5,10 +5,8 @@
 package org.citra.citra_emu.fragments
 
 import android.os.Bundle
-import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.LayoutInflater
-import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import com.google.android.material.bottomsheet.BottomSheetBehavior
@@ -103,7 +101,7 @@ class AutoMapDialogFragment : BottomSheetDialogFragment() {
         val layoutName = if (isNintendoLayout) "Nintendo" else "Xbox"
         Log.info("[AutoMap] Detected $layoutName layout (keyCode=$keyCode)")
 
-        val useAxisDpad = detectDpadType(device)
+        val useAxisDpad = InputBindingSetting.usesAxisDpad(device)
 
         val dpadName = if (useAxisDpad) "axis" else "button"
         Log.info("[AutoMap] Detected $dpadName d-pad (device=${device?.name})")
@@ -123,30 +121,6 @@ class AutoMapDialogFragment : BottomSheetDialogFragment() {
             val dialog = AutoMapDialogFragment()
             dialog.onComplete = onComplete
             return dialog
-        }
-
-        /**
-         * Returns true for axis d-pad (HAT_X/HAT_Y), false for button d-pad (DPAD_UP/DOWN/LEFT/RIGHT).
-         * Prefers axis when both are present. Defaults to axis if detection fails.
-         */
-        private fun detectDpadType(device: InputDevice?): Boolean {
-            if (device == null) return true
-
-            val hasAxisDpad = device.motionRanges.any {
-                it.axis == MotionEvent.AXIS_HAT_X || it.axis == MotionEvent.AXIS_HAT_Y
-            }
-
-            if (hasAxisDpad) return true
-
-            val dpadKeyCodes = intArrayOf(
-                KeyEvent.KEYCODE_DPAD_UP,
-                KeyEvent.KEYCODE_DPAD_DOWN,
-                KeyEvent.KEYCODE_DPAD_LEFT,
-                KeyEvent.KEYCODE_DPAD_RIGHT
-            )
-            val hasButtonDpad = device.hasKeys(*dpadKeyCodes).any { it }
-
-            return !hasButtonDpad
         }
     }
 }
