@@ -14,7 +14,7 @@ Commit format (mirrors upstream): `subsystem: Imperative summary`, e.g. `core: A
 
 C++20, CMake + Ninja, 36 submodules under `externals/` (run `git submodule update --init --recursive` on a fresh clone, or `tools/reset-submodules.sh`). Output binaries land in `<build>/bin/<Config>/`.
 
-A tests-only build already exists at `../azahar-build-tests` (Release, Qt/SDL2/web service/scripting off). Reuse it rather than configuring a new one:
+A tests-only build already exists at `../azahar-build-tests` (Release, Qt/SDL2/web service/scripting off). Reuse it rather than configuring a new one; agents working in worktrees build in their own `build/` with the configure line below:
 
 ```bash
 # Rebuild and run the whole Catch2 suite
@@ -27,16 +27,39 @@ cmake --build ../azahar-build-tests --target tests && ../azahar-build-tests/bin/
 ../azahar-build-tests/bin/Release/tests --list-tests
 ```
 
-To configure a new build (the CI recipe from `.ci/linux.sh`):
+To configure a new tests-only build (what `../azahar-build-tests` and every agent worktree use; `ENABLE_LTO=OFF` because the LTO link is a multi-GB memory spike and this machine has no ccache, so keep the link cheap and the rebuilds incremental):
 
 ```bash
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-  -DENABLE_ROOM_STANDALONE=OFF          # add -DENABLE_QT=OFF -DENABLE_SDL2=OFF for a tests-only build
-cmake --build build && ctest --test-dir build -C Release
+  -DENABLE_QT=OFF -DENABLE_SDL2=OFF -DENABLE_WEB_SERVICE=OFF -DENABLE_OPENAL=OFF \
+  -DENABLE_SCRIPTING=OFF -DENABLE_ROOM_STANDALONE=OFF -DENABLE_LTO=OFF   # add -DENABLE_BENCH=ON for azahar-bench
+cmake --build build --target tests -j4 && build/bin/Release/tests
 ```
 
-Useful options: `ENABLE_QT`, `ENABLE_TESTS`, `ENABLE_WEB_SERVICE`, `ENABLE_OPENGL`/`ENABLE_VULKAN`/`ENABLE_SOFTWARE_RENDERER`, `CITRA_USE_PRECOMPILED_HEADERS`, `CITRA_WARNINGS_AS_ERRORS` (ON by default, so new warnings break the build), `CITRA_ADDRESS_SANITIZE`, `ENABLE_DEVELOPER_OPTIONS`.
+The full CI recipe (`.ci/linux.sh`) is the same without the `ENABLE_*=OFF` flags and with `-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache`; it ends with `ctest --test-dir build -C Release`. A tests build from scratch takes 20-30 minutes at `-j4`; run at most two host builds at once on this machine.
+
+Useful options: `ENABLE_QT`, `ENABLE_TESTS`, `ENABLE_BENCH`, `ENABLE_WEB_SERVICE`, `ENABLE_OPENGL`/`ENABLE_VULKAN`/`ENABLE_SOFTWARE_RENDERER`, `ENABLE_LTO`, `CITRA_USE_PRECOMPILED_HEADERS`, `CITRA_WARNINGS_AS_ERRORS` (ON by default, so new warnings break the build), `CITRA_ADDRESS_SANITIZE`, `ENABLE_DEVELOPER_OPTIONS`.
+
+### Benchmarks
+
+Two host-side harnesses back the numbers in `docs/fork/improvement-plan.md` (metrics H-A and H-B). Both take before/after runs on the same machine; report the median of 3.
+
+**H-A, Catch2 micro-benchmarks** live in `src/tests/bench/` inside the `tests` binary, tagged `[bench]` and excluded from `ctest`/the default run. They need no ROM. Run them with the XML reporter and diff the `<mean>` values between builds:
+
+```bash
+build/bin/Release/tests "[bench]" --benchmark-samples 20 --benchmark-no-analysis -r xml -o bench.xml
+build/bin/Release/tests "[bench][memory]"          # one subsystem, human-readable table
+```
+
+Add a benchmark as a `TEST_CASE("Namespace::Class::Method", "[bench][subsystem]")` containing `BENCHMARK("what") { ... }` blocks (`<catch2/benchmark/catch_benchmark.hpp>`), with a comment naming the plan item it is the baseline for.
+
+**H-B, `azahar-bench`** (`src/citra_bench/`, built with `-DENABLE_BENCH=ON`) boots a title headless on the software renderer with a null audio sink, no frame limit and no disk shader cache, runs N system frames and prints one `key value` line per metric: `boot_ms` (Load to first vblank), `frames_per_s` and `cpu_ms_per_frame` (steady state, after the first frame), `cpu_ms`, `peak_rss_mb`/`vm_rss_mb`/`rss_anon_mb`, and the `PerfStats::Results` fields as `perf_*`. It uses a fresh temporary user directory per run (`--user-dir` to override, `--keep-user-dir` to inspect it). The ROM is Marty's own dump and is never committed; pass it on the command line or in `AZAHAR_BENCH_ROM`:
+
+```bash
+AZAHAR_BENCH_ROM=/path/to/acnl.3ds build/bin/Release/azahar-bench --frames 600
+build/bin/Release/azahar-bench --frames 600 --save-after 300 /path/to/rom   # adds savestate_save_ms, savestate_load_ms, savestate_bytes
+build/bin/Release/azahar-bench --movie input.ctm /path/to/rom                # deterministic input
+```
 
 Android (Gradle, from `src/android/`): `./gradlew assembleVanillaRelease` or `assembleGooglePlayRelease`; the NDK build reuses the same CMake tree. Kotlin formatting: `tools/check-kotlin-formatting.sh` / `tools/fix-kotlin-formatting.sh` (ktlint).
 
