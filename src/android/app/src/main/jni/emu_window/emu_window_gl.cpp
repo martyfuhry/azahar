@@ -1,4 +1,4 @@
-// Copyright 2019-2025 Citra Emulator Project / Azahar Emulator Project
+// Copyright 2019-2026 Citra Emulator Project / Azahar Emulator Project
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
@@ -91,12 +91,10 @@ EmuWindow_Android_OpenGL::EmuWindow_Android_OpenGL(Core::System& system_, ANativ
 
     CreateWindowSurface();
 
-    if (eglQuerySurface(egl_display, egl_surface, EGL_WIDTH, &window_width) != EGL_TRUE) {
-        return;
-    }
-    if (eglQuerySurface(egl_display, egl_surface, EGL_HEIGHT, &window_height) != EGL_TRUE) {
-        return;
-    }
+    // Neither the context nor the shared (pbuffer-backed) context needs a window surface, so
+    // create them first: the secondary window is now constructed without one whenever no second
+    // display is in use, and everything after this point does need a surface. core_context in
+    // particular is dereferenced unconditionally by MakeCurrent()/DoneCurrent().
     if (sharedContext) {
         egl_context = *sharedContext;
     } else if (egl_context =
@@ -105,13 +103,28 @@ EmuWindow_Android_OpenGL::EmuWindow_Android_OpenGL(Core::System& system_, ANativ
         LOG_CRITICAL(Frontend, "eglCreateContext() failed");
         return;
     }
+    if (core_context = CreateSharedContext(); !core_context) {
+        LOG_CRITICAL(Frontend, "CreateSharedContext() failed");
+        return;
+    }
+
+    if (egl_surface == EGL_NO_SURFACE) {
+        // No native window behind this EmuWindow (yet). PollEvents() builds the EGL surface
+        // when the frontend hands one over, which is also how the primary window recovers from
+        // a surface loss.
+        OnFramebufferSizeChanged();
+        return;
+    }
+
+    if (eglQuerySurface(egl_display, egl_surface, EGL_WIDTH, &window_width) != EGL_TRUE) {
+        return;
+    }
+    if (eglQuerySurface(egl_display, egl_surface, EGL_HEIGHT, &window_height) != EGL_TRUE) {
+        return;
+    }
     if (eglSurfaceAttrib(egl_display, egl_surface, EGL_SWAP_BEHAVIOR, EGL_BUFFER_DESTROYED) !=
         EGL_TRUE) {
         LOG_CRITICAL(Frontend, "eglSurfaceAttrib() failed");
-        return;
-    }
-    if (core_context = CreateSharedContext(); !core_context) {
-        LOG_CRITICAL(Frontend, "CreateSharedContext() failed");
         return;
     }
     if (eglMakeCurrent(egl_display, egl_surface, egl_surface, egl_context) != EGL_TRUE) {
