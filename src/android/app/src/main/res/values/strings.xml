@@ -391,6 +391,8 @@
     <string name="renderer_debug_description">Log additional graphics related debug information. When enabled, game performance will be significantly reduced.</string>
     <string name="instant_debug_log">Flush Log Output on Every Message</string>
     <string name="instant_debug_log_description">Immediately commits the debug log to file. Use this if Azahar crashes and the log output is being cut.</string>
+    <string name="perf_log_interval">Log performance summary</string>
+    <string name="perf_log_interval_description">Writes FPS, emulation speed and the frame time breakdown to the log this many seconds apart while emulation runs. 0 turns it off.</string>
     <string name="delay_start_lle_modules">Delay Start With LLE Modules</string>
     <string name="delay_start_lle_modules_description">Delays the start of the app when LLE modules are enabled.</string>
     <string name="deterministic_async_operations">Deterministic Async Operations</string>

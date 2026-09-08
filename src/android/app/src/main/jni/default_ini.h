@@ -560,6 +560,10 @@ static const char* android_config_default_file_content = (BOOST_HANA_STRING(R"(
 # Record frame time data, can be found in the log directory. Boolean value
 )") DECLARE_KEY(record_frame_times) BOOST_HANA_STRING(R"(
 
+# Write a performance summary (FPS, emulation speed, frame time breakdown) to the log this many
+# seconds apart while emulation runs. 0 (default): Off
+)") DECLARE_KEY(perf_log_interval) BOOST_HANA_STRING(R"(
+
 # Whether to enable additional debugging information during emulation
 # 0 (default): Off, 1: On
 )") DECLARE_KEY(renderer_debug) BOOST_HANA_STRING(R"(

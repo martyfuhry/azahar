@@ -166,6 +166,7 @@ void LogSettings() {
     log_setting("System_PluginLoaderAllowed", values.allow_plugin_loader.GetValue());
     log_setting("System_ApplyRegionFreePatch", values.apply_region_free_patch.GetValue());
     log_setting("System_AutoSaveMode", static_cast<u32>(values.autosave_mode.GetValue()));
+    log_setting("Debugging_PerfLogInterval", values.perf_log_interval.GetValue());
     log_setting("Debugging_DelayStartForLLEModules", values.delay_start_for_lle_modules.GetValue());
     log_setting("Debugging_UseGdbstub", values.use_gdbstub.GetValue());
     log_setting("Debugging_GdbstubPort", values.gdbstub_port.GetValue());

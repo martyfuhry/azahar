@@ -33,6 +33,13 @@ macro(generate_build_info)
         endif()
         git_describe(GIT_DESC --always --long --dirty)
         git_branch_name(GIT_BRANCH)
+        # In a git worktree .git is a file and the branch refs live in the main repository, which
+        # get_git_head_revision does not follow; ask git itself for the hash in that case
+        if (NOT GIT_REV AND GIT_FOUND)
+            execute_process(COMMAND "${GIT_EXECUTABLE}" rev-parse HEAD
+                WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+                OUTPUT_VARIABLE GIT_REV ERROR_QUIET OUTPUT_STRIP_TRAILING_WHITESPACE)
+        endif()
         if (DEFINED ENV{CITRA_USE_TAG_AS_VERSION})
             git_describe(GIT_TAG --tags --dirty)
         endif()

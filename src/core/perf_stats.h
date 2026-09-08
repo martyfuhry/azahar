@@ -8,10 +8,15 @@
 #include <atomic>
 #include <chrono>
 #include <cstddef>
+#include <memory>
 #include <mutex>
 #include "common/bit_field.h"
 #include "common/common_types.h"
 #include "common/thread.h"
+
+namespace FileUtil {
+class IOFile;
+}
 
 namespace Core {
 
@@ -124,12 +129,20 @@ public:
     static bool game_frames_updated;
 
 private:
+    /// Appends the frame times recorded since the previous call to the frame time CSV. Must be
+    /// called with object_mutex held; does nothing unless record_frame_times is enabled.
+    void FlushFrameTimes();
+
     mutable std::mutex object_mutex;
 
     /// Title ID for the game that is running. 0 if there is no game running yet
     u64 title_id{0};
     /// Current index for writing to the perf_history array
     std::size_t current_index{0};
+    /// Index of the first perf_history entry not yet written to the frame time CSV
+    std::size_t flushed_index{0};
+    /// Frame time CSV, opened on the first flush when record_frame_times is enabled
+    std::unique_ptr<FileUtil::IOFile> frame_times_file;
     /// Stores an hour of historical frametime data useful for processing and tracking performance
     /// regressions with code changes.
     std::array<double, 216000> perf_history{};

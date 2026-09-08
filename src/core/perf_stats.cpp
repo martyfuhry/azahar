@@ -26,28 +26,44 @@ constexpr double FRAME_LENGTH = 1.0 / SCREEN_REFRESH_RATE;
 // Purposefully ignore the first five frames, as there's a significant amount of overhead in
 // booting that we shouldn't account for
 constexpr std::size_t IgnoreFrames = 5;
+// How many frames to accumulate before appending them to the frame time CSV: ten seconds at the
+// LCD refresh rate, so a process killed from outside loses at most that much of the recording
+constexpr std::size_t FlushFrames = static_cast<std::size_t>(SCREEN_REFRESH_RATE * 10);
 
 namespace Core {
 
 bool PerfStats::game_frames_updated = true;
 
-PerfStats::PerfStats(u64 title_id) : title_id(title_id) {}
+PerfStats::PerfStats(u64 title_id) : title_id(title_id), flushed_index(IgnoreFrames) {}
 
 PerfStats::~PerfStats() {
-    if (!Settings::values.record_frame_times || title_id == 0) {
+    std::scoped_lock lock{object_mutex};
+    FlushFrameTimes();
+}
+
+void PerfStats::FlushFrameTimes() {
+    if (!Settings::values.record_frame_times || title_id == 0 || current_index <= flushed_index) {
         return;
     }
 
-    const std::time_t t = std::time(nullptr);
+    if (!frame_times_file) {
+        const std::time_t t = std::time(nullptr);
+        const std::string& path = FileUtil::GetUserPath(FileUtil::UserPath::LogDir);
+        // %F Date format expanded is "%Y-%m-%d"
+        const std::string filename =
+            fmt::format("{}/{:%F-%H-%M}_{:016X}.csv", path, *std::localtime(&t), title_id);
+        frame_times_file = std::make_unique<FileUtil::IOFile>(filename, "w");
+    }
+    if (!frame_times_file->IsOpen()) {
+        return;
+    }
+
     std::ostringstream stream;
-    std::copy(perf_history.begin() + IgnoreFrames, perf_history.begin() + current_index,
+    std::copy(perf_history.begin() + flushed_index, perf_history.begin() + current_index,
               std::ostream_iterator<double>(stream, "\n"));
-    const std::string& path = FileUtil::GetUserPath(FileUtil::UserPath::LogDir);
-    // %F Date format expanded is "%Y-%m-%d"
-    const std::string filename =
-        fmt::format("{}/{:%F-%H-%M}_{:016X}.csv", path, *std::localtime(&t), title_id);
-    FileUtil::IOFile file(filename, "w");
-    file.WriteString(stream.str());
+    frame_times_file->WriteString(stream.str());
+    frame_times_file->Flush();
+    flushed_index = current_index;
 }
 
 void PerfStats::BeginSVCProcessing() {
@@ -96,6 +112,9 @@ void PerfStats::EndSystemFrame() {
     if (current_index < perf_history.size()) {
         perf_history[current_index++] =
             std::chrono::duration<double, std::milli>(frame_time).count();
+        if (current_index - flushed_index >= FlushFrames) {
+            FlushFrameTimes();
+        }
     }
     accumulated_frametime += frame_time;
     system_frames += 1;

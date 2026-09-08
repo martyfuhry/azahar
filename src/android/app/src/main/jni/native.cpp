@@ -344,6 +344,46 @@ static void FlushAutoSave(Core::System& system) {
     }
 }
 
+/**
+ * Periodic performance summary for the log, so `logcat -s CitraNative` carries what the overlay
+ * shows without the overlay being on. Reads and resets the same counters as the overlay, so the
+ * two share windows when both are enabled; every figure is a rate or a per-frame mean, so a
+ * shorter window only makes it noisier, not wrong. The window is restarted after a pause because
+ * the reset point would otherwise count the paused wall time as emulated time stalling.
+ */
+class PerfLogger {
+public:
+    void Restart(Core::System& system) {
+        [[maybe_unused]] const auto discarded = system.GetAndResetPerfStats();
+        last_log = Clock::now();
+    }
+
+    void Poll(Core::System& system) {
+        const u32 interval = Settings::values.perf_log_interval.GetValue();
+        if (interval == 0) {
+            return;
+        }
+        const auto now = Clock::now();
+        if (now - last_log < std::chrono::seconds{interval}) {
+            return;
+        }
+        last_log = now;
+
+        const auto stats = system.GetAndResetPerfStats();
+        LOG_INFO(Frontend,
+                 "perf: game_fps={:.1f} system_fps={:.1f} speed={:.0f}% frametime={:.2f}ms "
+                 "gpu={:.2f}ms swap={:.2f}ms ipc={:.2f}ms svc={:.2f}ms rem={:.2f}ms",
+                 stats.game_fps, stats.system_fps, stats.emulation_speed * 100.0,
+                 stats.time_vblank_interval * 1000.0, stats.time_gpu * 1000.0,
+                 stats.time_swap * 1000.0, stats.time_hle_ipc * 1000.0, stats.time_hle_svc * 1000.0,
+                 stats.time_remaining * 1000.0);
+    }
+
+private:
+    using Clock = std::chrono::steady_clock;
+    Clock::time_point last_log = Clock::now();
+};
+
 static Core::System::ResultStatus RunCitra(const std::string& filepath) {
     // Citra core only supports a single running instance
     std::scoped_lock lock(running_mutex);
@@ -523,12 +563,15 @@ static Core::System::ResultStatus RunCitra(const std::string& filepath) {
 
     OfferAutoSaveOnBoot(system, program_id);
 
+    PerfLogger perf_logger;
+
     // Start running emulation
     while (!stop_run) {
         if (!pause_emulation) {
             FlushAutoSave(system);
             const auto result = system.RunLoop();
             if (result == Core::System::ResultStatus::Success) {
+                perf_logger.Poll(system);
                 continue;
             }
             if (result == Core::System::ResultStatus::ShutdownRequested) {
@@ -574,6 +617,9 @@ static Core::System::ResultStatus RunCitra(const std::string& filepath) {
             // are really about to run again
             if (!pause_emulation && !stop_run) {
                 SetAudioOutputPaused(false);
+                if (Settings::values.perf_log_interval.GetValue() != 0) {
+                    perf_logger.Restart(system);
+                }
             }
         }
     }
