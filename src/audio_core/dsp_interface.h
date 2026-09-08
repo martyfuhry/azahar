@@ -8,6 +8,7 @@
 #include <memory>
 #include <mutex>
 #include <span>
+#include <vector>
 #include <boost/serialization/access.hpp>
 #include "audio_core/audio_types.h"
 #include "audio_core/time_stretch.h"
@@ -122,6 +123,11 @@ protected:
 private:
     void FlushResidualStretcherAudio();
     void OutputCallback(s16* buffer, std::size_t num_frames);
+    /// Called on the producer side once per guest audio frame to sample the emulation speed
+    void UpdateEmulationSpeed();
+    /// Whether the emulation currently runs close enough to real time that stretching would only
+    /// add latency and CPU time (the TODO from #2487)
+    bool ShouldStretch() const;
 
     Core::System& system;
 
@@ -129,9 +135,15 @@ private:
     std::atomic<bool> performing_time_stretching = false;
     std::atomic<bool> flushing_time_stretcher = false;
     std::atomic<bool> output_paused = false;
+    /// Low-passed walltime / emulated-time ratio of recent system frames (1.0 = real time),
+    /// written by the producer thread and read by the audio callback
+    std::atomic<double> frame_time_scale = 1.0;
+    std::size_t samples_since_speed_update = 0;
     /// Guards sink replacement (SetSink) against PauseOutput from another thread
     std::mutex sink_mutex;
     Common::RingBuffer<s16, 0x2000, 2> fifo;
+    /// Scratch for draining the FIFO into the stretcher without allocating on the audio thread
+    std::vector<s16> stretch_in;
     std::array<s16, 2> last_frame{};
     TimeStretcher time_stretcher;
     std::unique_ptr<Sink> sink;

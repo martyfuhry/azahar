@@ -1,4 +1,4 @@
-// Copyright 2016 Citra Emulator Project
+// Copyright 2016-2026 Citra Emulator Project / Azahar Emulator Project
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
@@ -67,9 +67,13 @@ std::size_t TimeStretcher::Process(const s16* in, std::size_t num_in, s16* out,
 
     if constexpr (std::is_floating_point<soundtouch::SAMPLETYPE>()) {
         // The SoundTouch library on most systems expects float samples
-        // use this vector to store input if soundtouch::SAMPLETYPE is a float
-        std::vector<soundtouch::SAMPLETYPE> float_in(2 * num_in);
-        std::vector<soundtouch::SAMPLETYPE> float_out(2 * num_out);
+        // use these buffers to store input if soundtouch::SAMPLETYPE is a float
+        if (float_in.size() < 2 * num_in) {
+            float_in.resize(2 * num_in);
+        }
+        if (float_out.size() < 2 * num_out) {
+            float_out.resize(2 * num_out);
+        }
 
         for (std::size_t i = 0; i < (2 * num_in); i++) {
             // Conventional integer PCM uses a range of -32768 to 32767,
@@ -79,10 +83,12 @@ std::size_t TimeStretcher::Process(const s16* in, std::size_t num_in, s16* out,
             float_in[i] = static_cast<soundtouch::SAMPLETYPE>(temp);
         }
 
-        sound_touch->putSamples(float_in.data(), static_cast<u32>(num_in));
+        // Use reinterpret_cast to workaround compile error when SAMPLETYPE is s16.
+        sound_touch->putSamples(reinterpret_cast<const soundtouch::SAMPLETYPE*>(float_in.data()),
+                                static_cast<u32>(num_in));
 
-        const std::size_t samples_received =
-            sound_touch->receiveSamples(float_out.data(), static_cast<u32>(num_out));
+        const std::size_t samples_received = sound_touch->receiveSamples(
+            reinterpret_cast<soundtouch::SAMPLETYPE*>(float_out.data()), static_cast<u32>(num_out));
 
         // Converting output samples back to shorts so we can use them
         for (std::size_t i = 0; i < (2 * num_out); i++) {

@@ -2,7 +2,10 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <algorithm>
+#include <cmath>
 #include <cstddef>
+#include <cstring>
 #include "audio_core/dsp_interface.h"
 #include "audio_core/sink.h"
 #include "audio_core/sink_details.h"
@@ -54,10 +57,55 @@ void DspInterface::PauseOutput(bool paused) {
     }
 }
 
+void DspInterface::UpdateEmulationSpeed() {
+    // One system frame is 1/60 s of guest audio; sampling the perf stats every guest audio
+    // frame (160 samples, ~200 Hz) is plenty and keeps the per-sample LLE path cheap
+    constexpr std::size_t samples_per_update = 160;
+    samples_since_speed_update += 1;
+    if (samples_since_speed_update < samples_per_update) {
+        return;
+    }
+    samples_since_speed_update = 0;
+
+    // Roughly a 50 ms time constant at 200 Hz: fast enough to react to the frame limiter
+    // engaging, slow enough that a single long frame (shader compile, GC) does not flip the
+    // stretcher on and off.
+    constexpr double smoothing = 0.1;
+    // A frame that took more than a third of a second is a pause or a hitch, not a speed; cap
+    // its weight so the stretcher does not stay engaged for seconds after a resume
+    constexpr double max_scale = 20.0;
+    const double scale = system.GetStableFrameTimeScale();
+    if (!std::isfinite(scale) || scale <= 0.0) {
+        return;
+    }
+    const double previous = frame_time_scale.load(std::memory_order_relaxed);
+    frame_time_scale.store(previous + smoothing * (std::min(scale, max_scale) - previous),
+                           std::memory_order_relaxed);
+}
+
+bool DspInterface::ShouldStretch() const {
+    if (!enable_time_stretching.load(std::memory_order_relaxed)) {
+        return false;
+    }
+    // Stretching exists to cover speeds the FIFO cannot absorb. Within a few percent of real
+    // time the drift is slower than the FIFO's quarter second of slack for many seconds, and
+    // SoundTouch would only add latency and a full resample per callback. A little hysteresis
+    // keeps a speed that hovers on the threshold from toggling the stretcher every callback.
+    constexpr double engage_threshold = 0.05;
+    constexpr double release_threshold = 0.04;
+    const double deviation = std::abs(frame_time_scale.load(std::memory_order_relaxed) - 1.0);
+    const double threshold = performing_time_stretching.load(std::memory_order_relaxed)
+                                 ? release_threshold
+                                 : engage_threshold;
+    return deviation > threshold;
+}
+
 void DspInterface::OutputFrame(StereoFrame16 frame) {
     if (!sink) {
         return;
     }
+
+    UpdateEmulationSpeed();
 
     if (sink->ImmediateSubmission()) {
         sink->PushSamples(frame.data(), frame.size());
@@ -76,6 +124,8 @@ void DspInterface::OutputSample(std::array<s16, 2> sample) {
         return;
     }
 
+    UpdateEmulationSpeed();
+
     if (sink->ImmediateSubmission()) {
         sink->PushSamples(&sample, 1);
     } else {
@@ -89,20 +139,38 @@ void DspInterface::OutputSample(std::array<s16, 2> sample) {
 }
 
 void DspInterface::OutputCallback(s16* buffer, std::size_t num_frames) {
-    // Determine if we should stretch based on the current emulation speed.
-    // TODO: Only activate audio stretching when emulation speed goes below 95% threshold
-    //       (see #2487) -OS
-    if (performing_time_stretching && !enable_time_stretching) {
+    const float linear_volume = std::clamp(Settings::Volume(), 0.0f, 1.0f);
+    if (linear_volume <= 0.0f) {
+        // Muted (the Android frontend also mutes while paused, until the sink has stopped):
+        // nothing the guest produced can be heard, so skip the stretcher, the hold-last-frame
+        // fill and the volume multiply. Still drain the FIFO so audio does not pile up and
+        // play back late when the volume comes back, and drop whatever the stretcher held.
+        fifo.Pop(buffer, num_frames);
+        std::memset(buffer, 0, num_frames * 2 * sizeof(s16));
+        last_frame = {};
+        if (performing_time_stretching) {
+            time_stretcher.Clear();
+            performing_time_stretching = false;
+        }
+        flushing_time_stretcher = false;
+        return;
+    }
+
+    // Only stretch when the emulation speed is far enough from real time for it to matter
+    const bool should_stretch = ShouldStretch();
+    if (performing_time_stretching && !should_stretch) {
         // If we just stopped stretching, flush the stretcher before returning to normal output.
         flushing_time_stretcher = true;
     }
-    performing_time_stretching = enable_time_stretching.load();
+    performing_time_stretching = should_stretch;
 
     std::size_t frames_written = 0;
     if (performing_time_stretching) {
-        const std::vector<s16> in{fifo.Pop()};
-        const std::size_t num_in{in.size() / 2};
-        frames_written = time_stretcher.Process(in.data(), num_in, buffer, num_frames);
+        // Sized to the whole FIFO once; RingBuffer::Pop() by value would allocate that much on
+        // every callback
+        stretch_in.resize(fifo.Capacity() * 2);
+        const std::size_t num_in = fifo.Pop(stretch_in.data());
+        frames_written = time_stretcher.Process(stretch_in.data(), num_in, buffer, num_frames);
     } else {
         if (flushing_time_stretcher) {
             time_stretcher.Flush();
@@ -127,7 +195,6 @@ void DspInterface::OutputCallback(s16* buffer, std::size_t num_frames) {
 
     // Implementation of the hardware volume slider
     // A cubic curve is used to approximate a linear change in human-perceived loudness
-    const float linear_volume = std::clamp(Settings::Volume(), 0.0f, 1.0f);
     if (linear_volume != 1.0) {
         const float volume_scale_factor = linear_volume * linear_volume * linear_volume;
         for (std::size_t i = 0; i < num_frames; i++) {

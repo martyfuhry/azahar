@@ -1,4 +1,4 @@
-// Copyright 2016 Citra Emulator Project
+// Copyright 2016-2026 Citra Emulator Project / Azahar Emulator Project
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
@@ -7,6 +7,7 @@
 #include <array>
 #include <cstddef>
 #include <memory>
+#include <vector>
 #include "common/common_types.h"
 
 namespace soundtouch {
@@ -36,6 +37,11 @@ public:
 private:
     std::unique_ptr<soundtouch::SoundTouch> sound_touch;
     double stretch_ratio = 1.0;
+    /// Scratch buffers for the s16 <-> float conversion around SoundTouch. Process() runs on the
+    /// audio device thread up to ~200 times a second; these grow to the largest callback seen and
+    /// are never shrunk so the steady state does no allocation.
+    std::vector<float> float_in;
+    std::vector<float> float_out;
 };
 
 } // namespace AudioCore
