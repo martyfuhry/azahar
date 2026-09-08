@@ -198,6 +198,10 @@ if (ENABLE_TESTS)
     add_subdirectory(tests)
 endif()
 
+if (ENABLE_BENCH)
+    add_subdirectory(citra_bench)
+endif()
+
 if (ENABLE_QT)
     add_subdirectory(citra_qt)
 endif()
