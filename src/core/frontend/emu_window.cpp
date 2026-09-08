@@ -78,14 +78,18 @@ Settings::StereoRenderOption EmuWindow::get3DMode() const {
 
 bool EmuWindow::IsWithinTouchscreen(const Layout::FramebufferLayout& layout, unsigned framebuffer_x,
                                     unsigned framebuffer_y) {
-#ifndef ANDROID
-    // If separate windows and the touch is in the primary (top) screen, ignore it.
-    if (Settings::values.layout_option.GetValue() == Settings::LayoutOption::SeparateWindows &&
-        ((!is_secondary && !Settings::values.swap_screen.GetValue()) ||
-         (is_secondary && Settings::values.swap_screen.GetValue()))) {
+    // Only a window that actually shows the bottom screen may act as the DS touchscreen.
+    // This used to be a desktop-only test (`#ifndef ANDROID`) for the SeparateWindows layout,
+    // which is exactly the same question asked in a roundabout way: SeparateWindowsLayout()
+    // hands each window a SingleFrameLayout whose bottom_screen_enabled says whether that
+    // window is the bottom one. Every layout sets the flag, so asking the layout covers the
+    // desktop case unchanged *and* fixes Android, where the single-screen layouts left the
+    // top panel injecting touchscreen input (upstream #2020) - on the Thor the whole upper
+    // screen behaved like the DS touchscreen while the real bottom panel sat next to it.
+    if (!layout.bottom_screen_enabled) {
         return false;
     }
-#endif
+
     Settings::StereoRenderOption render_3d_mode = get3DMode();
 
     if (framebuffer_x > layout.width / 2 &&
@@ -200,6 +204,13 @@ void EmuWindow::TouchReleased() {
 
 void EmuWindow::TouchMoved(unsigned framebuffer_x, unsigned framebuffer_y) {
     if (!touch_state->touch_pressed)
+        return;
+
+    // The touch state is global across windows, so a press on the window that owns the bottom
+    // screen leaves it pressed for every other window too. A window that does not show the
+    // bottom screen must not clamp the drag into a screen it is not displaying (its
+    // bottom_screen rectangle is empty).
+    if (!framebuffer_layout.bottom_screen_enabled)
         return;
 
     if (!IsWithinTouchscreen(framebuffer_layout, framebuffer_x, framebuffer_y))

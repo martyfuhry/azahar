@@ -86,8 +86,8 @@ FramebufferLayout PortraitOriginalLayout(u32 width, u32 height, bool swapped, bo
 FramebufferLayout SingleFrameLayout(u32 width, u32 height, bool swapped, bool upright) {
     ASSERT(width > 0);
     ASSERT(height > 0);
-    // The drawing code needs at least somewhat valid values for both screens
-    // so just calculate them both even if the other isn't showing.
+    // Both screens are sized here because the maths is shared; only the one this layout
+    // shows is published in the result (see the end of the function).
     if (upright) {
         std::swap(width, height);
     }
@@ -137,8 +137,15 @@ FramebufferLayout SingleFrameLayout(u32 width, u32 height, bool swapped, bool up
                          .TranslateY((height - bot_screen.GetHeight()) / 2);
     }
 
-    res.top_screen = top_screen;
-    res.bottom_screen = bot_screen;
+    // Only report a rectangle for the screen this layout actually shows. Both are computed
+    // above because the maths for one depends on the same window area as the other, but a
+    // hidden screen must not be published as a real screen region: EmuWindow uses
+    // bottom_screen to decide whether a touch landed on the DS touchscreen, and a hidden
+    // bottom screen that still carried a full-window rectangle is why touching the top panel
+    // injected touch input (upstream #2020). The renderers skip a screen whose
+    // {top,bottom}_screen_enabled is false, so they never read the emptied rectangle.
+    res.top_screen = res.top_screen_enabled ? top_screen : Common::Rectangle<u32>{};
+    res.bottom_screen = res.bottom_screen_enabled ? bot_screen : Common::Rectangle<u32>{};
     if (upright) {
         return reverseLayout(res);
     } else {
