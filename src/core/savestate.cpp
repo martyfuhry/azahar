@@ -2,6 +2,7 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <charconv>
 #include <chrono>
 #include <sstream>
 #include <cryptopp/hex.h>
@@ -39,14 +40,21 @@ static_assert(sizeof(CSTHeader) == 256, "CSTHeader should be 256 bytes");
 constexpr std::array<u8, 4> header_magic_bytes{{'C', 'S', 'T', 0x1B}};
 
 static std::string GetSaveStatePath(u64 program_id, u64 movie_id, u32 slot) {
+    const std::string slot_name =
+        slot == AutoSaveStateSlot ? "autosave" : fmt::format("{:02d}", slot);
     if (movie_id) {
-        return fmt::format("{}{:016X}.movie{:016X}.{:02d}.cst",
+        return fmt::format("{}{:016X}.movie{:016X}.{}.cst",
                            FileUtil::GetUserPath(FileUtil::UserPath::StatesDir), program_id,
-                           movie_id, slot);
+                           movie_id, slot_name);
     } else {
-        return fmt::format("{}{:016X}.{:02d}.cst",
-                           FileUtil::GetUserPath(FileUtil::UserPath::StatesDir), program_id, slot);
+        return fmt::format("{}{:016X}.{}.cst", FileUtil::GetUserPath(FileUtil::UserPath::StatesDir),
+                           program_id, slot_name);
     }
+}
+
+static std::string GetLastBootMarkerPath(u64 program_id) {
+    return fmt::format("{}{:016X}.lastboot", FileUtil::GetUserPath(FileUtil::UserPath::StatesDir),
+                       program_id);
 }
 
 static bool ValidateSaveState(const CSTHeader& header, SaveStateInfo& info, u64 program_id,
@@ -143,6 +151,63 @@ SaveStateInfo GetSaveStateInfo(u64 program_id, u64 movie_id, u32 slot) {
         info.slot = slot;
     }
     return info;
+}
+
+SaveStateInfo GetAutoSaveStateInfo(u64 program_id, u64 movie_id) {
+    return GetSaveStateInfo(program_id, movie_id, AutoSaveStateSlot);
+}
+
+u64 GetLastNormalBootTime(u64 program_id) {
+    const auto path = GetLastBootMarkerPath(program_id);
+    if (!FileUtil::Exists(path)) {
+        return 0;
+    }
+    std::string contents;
+    if (!FileUtil::ReadFileToString(true, path, contents)) {
+        LOG_WARNING(Core, "Could not read boot marker {}", path);
+        return 0;
+    }
+    u64 time{};
+    const auto* end = contents.data() + contents.size();
+    if (std::from_chars(contents.data(), end, time).ec != std::errc{}) {
+        LOG_WARNING(Core, "Malformed boot marker {}", path);
+        return 0;
+    }
+    return time;
+}
+
+void RecordNormalBoot(u64 program_id, u64 time) {
+    const auto path = GetLastBootMarkerPath(program_id);
+    if (!FileUtil::CreateFullPath(path)) {
+        LOG_WARNING(Core, "Could not create path for boot marker {}", path);
+        return;
+    }
+    if (!FileUtil::WriteStringToFile(true, path, fmt::format("{}", time))) {
+        LOG_WARNING(Core, "Could not write boot marker {}", path);
+    }
+}
+
+AutoSaveResumeStatus ClassifyAutoSaveState(const SaveStateInfo& autosave, u64 last_boot_time) {
+    if (autosave.slot != AutoSaveStateSlot) {
+        return AutoSaveResumeStatus::None;
+    }
+    if (autosave.status == SaveStateInfo::ValidationStatus::BuildMismatch) {
+        return AutoSaveResumeStatus::BuildMismatch;
+    }
+    // The header time has one-second resolution, so a state written within the same second as
+    // the boot that preceded it still counts as newer than that boot
+    if (autosave.time < last_boot_time) {
+        return AutoSaveResumeStatus::Stale;
+    }
+    return AutoSaveResumeStatus::Resumable;
+}
+
+AutoSaveResumeStatus CheckAutoSaveState(u64 program_id, u64 movie_id, SaveStateInfo* info) {
+    const auto autosave = GetAutoSaveStateInfo(program_id, movie_id);
+    if (info) {
+        *info = autosave;
+    }
+    return ClassifyAutoSaveState(autosave, GetLastNormalBootTime(program_id));
 }
 
 void System::SaveState(u32 slot) const {

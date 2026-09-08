@@ -309,6 +309,12 @@ bool System::SendSignal(System::Signal signal, u32 param) {
     return true;
 }
 
+bool System::HasPendingSaveStateRequest() {
+    std::scoped_lock lock{signal_mutex};
+    return current_signal == Signal::Save || current_signal == Signal::Load ||
+           save_state_request_status != SaveStateStatus::NONE;
+}
+
 System::ResultStatus System::SingleStep() {
     return RunLoop(false);
 }

@@ -165,6 +165,14 @@ public:
     }
 
     /**
+     * Whether a Signal::Save/Signal::Load is still waiting to be picked up by RunLoop(), or a
+     * picked-up one has not yet been carried out (or abandoned after its timeout). Lets a
+     * frontend that is about to park the emulation thread keep pumping RunLoop() until a
+     * requested state has actually reached the disk.
+     */
+    bool HasPendingSaveStateRequest();
+
+    /**
      * Load an executable application.
      * @param emu_window Reference to the host-system window used for video output and keyboard
      *                   input.
