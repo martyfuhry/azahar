@@ -664,6 +664,8 @@ struct Values {
 
     // Debugging
     bool record_frame_times;
+    /// Seconds between PerfStats summaries written to the log; 0 disables them
+    Setting<u32> perf_log_interval{0, Keys::perf_log_interval};
     std::unordered_map<std::string, bool> lle_modules;
     Setting<bool> delay_start_for_lle_modules{true, Keys::delay_start_for_lle_modules};
     Setting<bool> use_gdbstub{false, Keys::use_gdbstub};
