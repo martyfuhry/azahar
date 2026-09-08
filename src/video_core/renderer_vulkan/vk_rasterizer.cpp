@@ -1030,4 +1030,8 @@ void RasterizerVulkan::SwitchDiskResources(u64 title_id) {
     }
 }
 
+void RasterizerVulkan::FlushDiskResources() {
+    pipeline_cache.SaveDriverPipelineDiskCache();
+}
+
 } // namespace Vulkan

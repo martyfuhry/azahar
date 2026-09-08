@@ -560,6 +560,9 @@ static Core::System::ResultStatus RunCitra(const std::string& filepath) {
             // The activity going to the background asked for an autosave just before parking
             // us here; write it now, while Android still lets the process run
             FlushAutoSave(system);
+            // Same for the pipeline cache flush pauseEmulation() requested: the autosave's own
+            // RunLoop() normally services it, but nothing does when autosave is off
+            system.FlushPipelineCacheIfRequested();
 
             std::unique_lock pause_lock{paused_mutex};
             running_cv.wait(pause_lock, [] {
@@ -1078,6 +1081,10 @@ void Java_org_citra_citra_1emu_NativeLibrary_unPauseEmulation([[maybe_unused]] J
 
 void Java_org_citra_citra_1emu_NativeLibrary_pauseEmulation([[maybe_unused]] JNIEnv* env,
                                                             [[maybe_unused]] jobject obj) {
+    // Once backgrounded the process can be killed without ever shutting down, which would
+    // throw away every pipeline the driver compiled this session; get them to disk alongside
+    // the autosave the activity requests right after this
+    Core::System::GetInstance().RequestPipelineCacheFlush();
     {
         std::scoped_lock lock{paused_mutex};
         if (stop_run) {

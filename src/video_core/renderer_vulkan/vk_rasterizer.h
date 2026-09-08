@@ -64,6 +64,9 @@ public:
     /// Switches the disk resources to the specified title
     void SwitchDiskResources(u64 title_id) override;
 
+    /// Writes the driver pipeline cache to disk if it grew since the last write
+    void FlushDiskResources() override;
+
 private:
     /// Syncs pipeline state from PICA registers
     void SyncDrawState();

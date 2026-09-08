@@ -82,6 +82,13 @@ public:
 
     virtual void SwitchDiskResources([[maybe_unused]] u64 title_id) {}
 
+    /**
+     * Writes any disk resources that only live in memory until shutdown (the driver pipeline
+     * cache) to disk now, so a process kill does not lose them. Must be cheap when nothing
+     * changed since the last call, as the core invokes it periodically. Emulation thread only.
+     */
+    virtual void FlushDiskResources() {}
+
     static void SetSwitchDiskResourcesCallback(const DiskResourceLoadCallback& callback) {
         switch_disk_resources_callback = callback;
     }

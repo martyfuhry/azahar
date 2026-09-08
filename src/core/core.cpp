@@ -101,6 +101,10 @@ System::ResultStatus System::RunLoop(bool tight_loop) {
     }
 #endif
 
+    // Before the signals: a frontend about to background the app requests this together with
+    // an autosave, and the Signal::Save that carries out the autosave returns early below
+    FlushPipelineCacheIfRequested();
+
     Signal signal{Signal::None};
     u32 param{};
     {
@@ -319,11 +323,30 @@ System::ResultStatus System::SingleStep() {
     return RunLoop(false);
 }
 
+/// How long compiled pipelines may stay only in memory before RunLoop() writes them to disk
+constexpr auto pipeline_cache_flush_interval = std::chrono::minutes{5};
+
+void System::FlushPipelineCacheIfRequested() {
+    const auto now = std::chrono::steady_clock::now();
+    if (!pipeline_cache_flush_requested.exchange(false) &&
+        now - last_pipeline_cache_flush < pipeline_cache_flush_interval) {
+        return;
+    }
+    last_pipeline_cache_flush = now;
+    if (gpu) {
+        gpu->Renderer().Rasterizer()->FlushDiskResources();
+    }
+}
+
 System::ResultStatus System::Load(Frontend::EmuWindow& emu_window, const std::string& filepath,
                                   Frontend::EmuWindow* secondary_window) {
     Settings::ResetTemporaryFrameLimit();
     // A fresh boot samples the host clock itself; drop any resync left over from the last session
     clock_resync_requested = false;
+    // Likewise, nothing compiled by the previous session is left to flush; the first periodic
+    // flush is due one interval after boot
+    pipeline_cache_flush_requested = false;
+    last_pipeline_cache_flush = std::chrono::steady_clock::now();
     FileUtil::SetCurrentRomPath(filepath);
     if (early_app_loader) {
         app_loader = std::move(early_app_loader);

@@ -225,12 +225,12 @@ void PipelineCache::LoadDriverPipelineDiskCache(
     }
 
     // Try to load existing pipeline cache for this game/device combination
-    const auto cache_dir = GetPipelineCacheDir();
-    const u32 vendor_id = instance.GetVendorID();
-    const u32 device_id = instance.GetDeviceID();
     const u64 program_id = GetProgramID();
-    const auto cache_file_path =
-        fmt::format("{}{:016X}-{:X}{:X}.bin", cache_dir, program_id, vendor_id, device_id);
+    const auto cache_file_path = GetDriverPipelineCachePath();
+
+    // Whatever load_cache ends up with is what is on disk (or nothing is), so a save that
+    // follows without any new compilation has nothing to add
+    SCOPE_EXIT({ saved_driver_cache_size = GetDriverPipelineCacheSize(); });
 
     std::vector<u8> cache_data;
     FileUtil::IOFile cache_file{cache_file_path, "rb"};
@@ -266,33 +266,73 @@ void PipelineCache::LoadDriverPipelineDiskCache(
     load_cache(true);
 }
 
+std::size_t PipelineCache::GetDriverPipelineCacheSize() const {
+    if (!driver_pipeline_cache) {
+        return 0;
+    }
+    std::size_t size = 0;
+    const vk::Result result =
+        instance.GetDevice().getPipelineCacheData(*driver_pipeline_cache, &size, nullptr);
+    return result == vk::Result::eSuccess ? size : 0;
+}
+
+std::string PipelineCache::GetDriverPipelineCachePath() const {
+    // Include both device info and program id in cache path to handle both GPU changes and
+    // different games
+    return fmt::format("{}{:016X}-{:X}{:X}.bin", GetPipelineCacheDir(), GetProgramID(),
+                       instance.GetVendorID(), instance.GetDeviceID());
+}
+
 void PipelineCache::SaveDriverPipelineDiskCache() {
     // Save Vulkan pipeline cache
     if (!Settings::values.use_disk_shader_cache || !driver_pipeline_cache) {
         return;
     }
 
-    const auto cache_dir = GetPipelineCacheDir();
-    const u32 vendor_id = instance.GetVendorID();
-    const u32 device_id = instance.GetDeviceID();
-    const u64 program_id = GetProgramID();
-    // Include both device info and program id in cache path to handle both GPU changes and
-    // different games
-    const auto cache_file_path =
-        fmt::format("{}{:016X}-{:X}{:X}.bin", cache_dir, program_id, vendor_id, device_id);
-
-    FileUtil::IOFile cache_file{cache_file_path, "wb"};
-    if (!cache_file.IsOpen()) {
-        LOG_ERROR(Render_Vulkan, "Unable to open pipeline cache for writing");
+    // The driver only grows its cache when a pipeline was actually compiled, so an unchanged
+    // serialized size means the file on disk is still current. This is what keeps the
+    // periodic and pause-time saves free in the common case.
+    const std::size_t cache_size = GetDriverPipelineCacheSize();
+    if (cache_size == 0 || cache_size == saved_driver_cache_size) {
         return;
     }
+
+    if (!EnsureDirectories()) {
+        LOG_ERROR(Render_Vulkan, "Unable to create pipeline cache directory");
+        return;
+    }
+
+    const auto cache_file_path = GetDriverPipelineCachePath();
+    const auto tmp_file_path = cache_file_path + ".tmp";
 
     const vk::Device device = instance.GetDevice();
     const auto cache_data = device.getPipelineCacheData(*driver_pipeline_cache);
-    if (cache_file.WriteBytes(cache_data.data(), cache_data.size()) != cache_data.size()) {
-        LOG_ERROR(Render_Vulkan, "Error during pipeline cache write");
+
+    // Write to a temporary file and rename it over the old one, so that a process kill in the
+    // middle of the write leaves the previous cache intact rather than a truncated file that
+    // the next boot rejects (and this save can happen while the app is being backgrounded)
+    {
+        FileUtil::IOFile cache_file{tmp_file_path, "wb"};
+        if (!cache_file.IsOpen()) {
+            LOG_ERROR(Render_Vulkan, "Unable to open pipeline cache for writing");
+            return;
+        }
+        if (cache_file.WriteBytes(cache_data.data(), cache_data.size()) != cache_data.size()) {
+            LOG_ERROR(Render_Vulkan, "Error during pipeline cache write");
+            cache_file.Close();
+            FileUtil::Delete(tmp_file_path);
+            return;
+        }
+    }
+    if (!FileUtil::Rename(tmp_file_path, cache_file_path)) {
+        LOG_ERROR(Render_Vulkan, "Unable to move pipeline cache into place");
+        FileUtil::Delete(tmp_file_path);
         return;
     }
+
+    saved_driver_cache_size = cache_data.size();
+    LOG_INFO(Render_Vulkan, "Saved pipeline cache for title_id={:016X} with size {} KB",
+             GetProgramID(), cache_data.size() / 1024);
 }
 
 void PipelineCache::LoadDiskCache(const std::atomic_bool& stop_loading,
