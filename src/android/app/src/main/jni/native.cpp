@@ -121,6 +121,13 @@ std::atomic<u32> autosave_completed{0};
 std::mutex autosave_mutex;
 std::condition_variable autosave_cv;
 
+// Set whenever System::Init() finishes, i.e. on boot and on every savestate load (which goes
+// through System::serialize -> Shutdown/Init). Each of those builds a brand new GPU and
+// renderer, so any disk shader/pipeline cache this frontend had already loaded is gone with the
+// old one. RunCitra() clears the flag when it loads the cache and reloads it whenever it finds
+// the flag set again, so a savestate load does not leave the session compiling from scratch.
+std::atomic<bool> renderer_rebuilt{false};
+
 // Guards the lifetime of s_surface/s_secondary_surface and the (re)creation of the
 // EmuWindow_Android and renderer objects that consume them. Android may destroy or replace the
 // Surface passed to us (on rotation, or if the fragment hosting the SurfaceView is torn
@@ -239,8 +246,11 @@ static bool AutoSaveEnabled() {
  * through Signal::Load like a user-picked slot, so the first RunLoop() iterations perform it
  * on this thread, RunLoop() re-anchors the guest clock afterwards, and any failure reaches
  * the user through the usual core error dialog instead of taking the boot down.
+ *
+ * Returns true when a Signal::Load was queued, so that the caller can carry it out before it
+ * loads the disk shader cache into a renderer the load would only throw away.
  */
-static void OfferAutoSaveOnBoot(Core::System& system, u64 program_id) {
+static bool OfferAutoSaveOnBoot(Core::System& system, u64 program_id) {
     const u64 movie_id = system.Movie().GetCurrentMovieID();
     Core::SaveStateInfo autosave{};
     const auto resume = Core::CheckAutoSaveState(program_id, movie_id, &autosave);
@@ -253,7 +263,7 @@ static void OfferAutoSaveOnBoot(Core::System& system, u64 program_id) {
     Core::RecordNormalBoot(program_id, now);
 
     if (!AutoSaveEnabled()) {
-        return;
+        return false;
     }
     switch (resume) {
     case Core::AutoSaveResumeStatus::None:
@@ -272,11 +282,71 @@ static void OfferAutoSaveOnBoot(Core::System& system, u64 program_id) {
             LOG_INFO(Frontend, "Resuming from autosave written at {}", autosave.time);
             system.SendSignal(Core::System::Signal::Load, Core::AutoSaveStateSlot);
             NotifyAutoSaveEvent(AutoSaveEvent::Resuming, autosave);
-        } else {
-            NotifyAutoSaveEvent(AutoSaveEvent::Offered, autosave);
+            return true;
         }
+        NotifyAutoSaveEvent(AutoSaveEvent::Offered, autosave);
         break;
     }
+    return false;
+}
+
+/**
+ * Loads the disk shader/pipeline cache for the running title into the renderer that exists now,
+ * and clears renderer_rebuilt so that only a *later* rebuild asks for another load.
+ *
+ * `report_progress` drives the boot loading screen. A reload triggered mid-session by a
+ * savestate load runs silently instead, the way GPU::RecreateRenderer already does it: the
+ * loading screen is long gone by then and re-driving it would flash progress at a hidden view.
+ */
+static void LoadDiskResources(Core::System& system, u64 program_id, bool report_progress) {
+    renderer_rebuilt = false;
+    if (report_progress) {
+        LoadDiskCacheProgress(VideoCore::LoadCallbackStage::Prepare, 0, 0, "");
+    }
+    system.GPU().ApplyPerProgramSettings(program_id);
+    system.GPU().Renderer().Rasterizer()->LoadDefaultDiskResources(
+        stop_run, report_progress ? VideoCore::DiskResourceLoadCallback{&LoadDiskCacheProgress}
+                                  : VideoCore::DiskResourceLoadCallback{});
+    if (report_progress) {
+        LoadDiskCacheProgress(VideoCore::LoadCallbackStage::Complete, 0, 0, "");
+    }
+}
+
+/**
+ * Called from the run loop after every RunLoop() that could have loaded a savestate. A load
+ * destroys the GPU and builds a new one (System::serialize -> Shutdown/Init), so the renderer
+ * that comes out of it has an empty pipeline cache no matter how much this frontend loaded at
+ * boot. Put the cache back rather than let the rest of the session recompile every pipeline the
+ * title touches.
+ */
+static void ReloadDiskResourcesIfRendererRebuilt(Core::System& system, u64 program_id) {
+    if (!renderer_rebuilt.load()) {
+        return;
+    }
+    LOG_INFO(Frontend, "Reloading disk shader cache into the renderer a savestate load rebuilt");
+    LoadDiskResources(system, program_id, false);
+}
+
+/**
+ * Drives RunLoop() on the emulation thread until a savestate request queued moments ago has been
+ * carried out (the core only serializes once no kernel async operations are pending, and gives up
+ * on its own after five seconds). Returns false when the boot must be abandoned.
+ */
+static bool PumpPendingSaveStateRequest(Core::System& system) {
+    while (!stop_run && system.HasPendingSaveStateRequest()) {
+        const auto result = system.RunLoop();
+        if (result == Core::System::ResultStatus::ShutdownRequested) {
+            stop_run = true;
+            return false;
+        }
+        if (result != Core::System::ResultStatus::Success) {
+            LOG_ERROR(Frontend, "Autosave resume failed: {}", system.GetStatusDetails());
+            // Same treatment as a core error from the run loop: the user decides whether to carry
+            // on with the freshly booted title or to leave.
+            return HandleCoreError(result, system.GetStatusDetails());
+        }
+    }
+    return true;
 }
 
 /**
@@ -430,6 +500,10 @@ static Core::System::ResultStatus RunCitra(const std::string& filepath) {
                 wait_lock.release();
             }
         } else {
+            // Init() has finished: whatever renderer existed before is gone, and the one that
+            // replaced it has an empty pipeline cache. RunCitra() clears this again as soon as it
+            // has loaded the disk cache into the new renderer.
+            renderer_rebuilt = true;
             surface_mutex.unlock();
         }
     });
@@ -532,16 +606,6 @@ static Core::System::ResultStatus RunCitra(const std::string& filepath) {
         LOG_INFO(Frontend, "Starting paused: the activity was backgrounded during boot");
     }
 
-    LoadDiskCacheProgress(VideoCore::LoadCallbackStage::Prepare, 0, 0, "");
-
-    system.GPU().ApplyPerProgramSettings(program_id);
-
-    std::unique_ptr<Frontend::GraphicsContext> cpu_context;
-    system.GPU().Renderer().Rasterizer()->LoadDefaultDiskResources(stop_run,
-                                                                   &LoadDiskCacheProgress);
-
-    LoadDiskCacheProgress(VideoCore::LoadCallbackStage::Complete, 0, 0, "");
-
     SCOPE_EXIT({
         {
             // The loop may be leaving on the guest's own request (a title powering off), in
@@ -561,7 +625,27 @@ static Core::System::ResultStatus RunCitra(const std::string& filepath) {
 
     system.RegisterCoreLoopThreadId();
 
-    OfferAutoSaveOnBoot(system, program_id);
+    // Resume from the previous session's autosave *before* the disk shader cache is loaded, and
+    // carry the load out here rather than leaving it to the first run loop iterations. Loading a
+    // savestate tears the emulated system down and builds it again (System::serialize ->
+    // Shutdown/Init), and the system that comes out of it owns a brand new renderer with an empty
+    // pipeline cache. Doing it in this order means the boot pays for the cache exactly once and
+    // the resumed session starts warm, instead of loading ~800 ms of cache only to throw it away
+    // and then recompile every pipeline the title touches.
+    if (OfferAutoSaveOnBoot(system, program_id)) {
+        // The activity may have been backgrounded during the loading screen; the pause only takes
+        // effect once the run loop below starts, so keep these few slices silent.
+        const float volume = Settings::values.volume.GetValue();
+        SCOPE_EXIT({ Settings::values.volume = volume; });
+        if (pause_emulation) {
+            Settings::values.volume = 0;
+        }
+        if (!PumpPendingSaveStateRequest(system)) {
+            return Core::System::ResultStatus::ShutdownRequested;
+        }
+    }
+
+    LoadDiskResources(system, program_id, true);
 
     PerfLogger perf_logger;
 
@@ -571,6 +655,9 @@ static Core::System::ResultStatus RunCitra(const std::string& filepath) {
             FlushAutoSave(system);
             const auto result = system.RunLoop();
             if (result == Core::System::ResultStatus::Success) {
+                // A savestate the user picked (including the boot-time "resume?" prompt, answered
+                // while the cache was still loading) rebuilds the renderer from under us
+                ReloadDiskResourcesIfRendererRebuilt(system, program_id);
                 perf_logger.Poll(system);
                 continue;
             }
