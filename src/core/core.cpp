@@ -523,7 +523,8 @@ PerfStats::Results System::GetLastPerfStats() {
 }
 
 double System::GetStableFrameTimeScale() {
-    return perf_stats->GetStableFrameTimeScale();
+    // Real time when there is nothing to measure against (before Load, or a DSP driven by tests)
+    return perf_stats ? perf_stats->GetStableFrameTimeScale() : 1.0;
 }
 
 void System::Reschedule() {
