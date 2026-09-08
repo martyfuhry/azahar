@@ -44,10 +44,13 @@ object ControllerAutoMapper {
     /** Seeds from whichever physical gamepad is connected right now, if nothing is mapped. */
     fun seedFromConnectedDevices() {
         if (seededThisProcess) return
-        InputDevice.getDeviceIds()
-            .mapNotNull { InputDevice.getDevice(it) }
-            .firstOrNull { isPhysicalGamepad(it) }
-            ?.let { seedIfUnmapped(it) }
+        for (id in InputDevice.getDeviceIds()) {
+            val device: InputDevice = InputDevice.getDevice(id) ?: continue
+            if (isPhysicalGamepad(device)) {
+                seedIfUnmapped(device)
+                return
+            }
+        }
     }
 
     /**
