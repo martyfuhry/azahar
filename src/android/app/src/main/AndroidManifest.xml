@@ -48,6 +48,9 @@
         <meta-data android:name="android.game_mode_config"
             android:resource="@xml/game_mode_config" />
 
+        <!-- Lets simpleperf and other shell profilers attach to release builds -->
+        <profileable android:shell="true" />
+
         <activity
             android:name="org.citra.citra_emu.ui.main.MainActivity"
             android:theme="@style/Theme.Citra.Splash.Main"
