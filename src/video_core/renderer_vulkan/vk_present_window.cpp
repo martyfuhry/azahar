@@ -95,6 +95,15 @@ bool CanBlitToSwapchain(const vk::PhysicalDevice& physical_device, vk::Format fo
     };
 }
 
+/// How many times a fence wait that failed with a transient result is retried before the window
+/// is given up on. The wait uses an infinite timeout, so a loop here is a driver returning an
+/// error; retrying forever spun a core at 100% on the emulation thread.
+constexpr u32 MAX_FENCE_WAIT_RETRIES = 1024;
+
+/// How many times the swapchain is recreated on the same surface after an acquire or present
+/// failure before the window is given up on. A lost device fails every attempt immediately.
+constexpr u32 MAX_SWAPCHAIN_RECREATE_ATTEMPTS = 8;
+
 } // Anonymous namespace
 
 PresentWindow::PresentWindow(Frontend::EmuWindow& emu_window_, const Instance& instance_,
@@ -111,8 +120,17 @@ PresentWindow::PresentWindow(Frontend::EmuWindow& emu_window_, const Instance& i
       use_present_thread{Settings::values.async_presentation.GetValue()},
       last_render_surface{emu_window.GetWindowInfo().render_surface} {
 
-    const u32 num_images = swapchain.GetImageCount();
+    // If the surface was already gone when the swapchain was first created, its image count is
+    // still unknown; size the frame pool for a typical triple-buffered swapchain instead. The
+    // pool does not need to match the swapchain, it only bounds the frames in flight.
+    const u32 num_images = std::max(swapchain.GetImageCount(), 3u);
     const vk::Device device = instance.GetDevice();
+
+    if (!surface) {
+        // The window could not be wrapped in a surface; do not let the dedupe in
+        // NotifySurfaceChanged() skip it when the frontend offers it again.
+        last_render_surface = nullptr;
+    }
 
     const vk::CommandPoolCreateInfo pool_info = {
         .flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer |
@@ -247,6 +265,10 @@ void PresentWindow::RecreateFrame(Frame* frame, u32 width, u32 height) {
 Frame* PresentWindow::GetRenderFrame() {
     MICROPROFILE_SCOPE(Vulkan_WaitPresent);
 
+    if (IsPresentationLost()) {
+        return nullptr;
+    }
+
     // Wait for free presentation frames
     std::unique_lock lock{free_mutex};
     free_cv.wait(lock, [this] { return !free_queue.empty(); });
@@ -264,18 +286,26 @@ Frame* PresentWindow::GetRenderFrame() {
     };
 
     // Wait for the presentation to be finished so all frame resources are free
+    u32 retries = 0;
     while (wait() != vk::Result::eSuccess) {
-        // Retry if the waiting times out
-        if (result == vk::Result::eTimeout) {
+        // eTimeout cannot happen with an infinite timeout but is harmless to retry.
+        // eErrorInitializationFailed occurs on Mali GPU drivers due to them
+        // using the ppoll() syscall which isn't correctly restarted after a signal,
+        // we need to manually retry waiting in that case.
+        const bool transient =
+            result == vk::Result::eTimeout || result == vk::Result::eErrorInitializationFailed;
+        if (transient && ++retries < MAX_FENCE_WAIT_RETRIES) {
             continue;
         }
 
-        // eErrorInitializationFailed occurs on Mali GPU drivers due to them
-        // using the ppoll() syscall which isn't correctly restarted after a signal,
-        // we need to manually retry waiting in that case
-        if (result == vk::Result::eErrorInitializationFailed) {
-            continue;
-        }
+        // Device lost (the GPU was suspended under us), out of memory, or a transient result
+        // that never cleared. Nothing rendered into this frame can be presented any more; hand
+        // the frame back and let the renderer report the failure instead of spinning here.
+        LOG_CRITICAL(Render_Vulkan, "Waiting for the present fence failed with {} after {} tries",
+                     vk::to_string(result), retries + 1);
+        free_queue.push(frame);
+        MarkPresentationLost("present fence wait failed");
+        return nullptr;
     }
 
     device.resetFences(frame->present_done);
@@ -365,22 +395,61 @@ void PresentWindow::NotifySurfaceChanged() {
         next_surface = vk::SurfaceKHR{};
     }
 
-    next_surface = CreateSurface(instance.GetInstance(), emu_window);
+    // surfaceDestroyed(): the window is gone. Forget it, so that a future window which happens
+    // to be allocated at the same address is not mistaken for this one and skipped (which
+    // would leave the present thread waiting for a surface forever), and make the present
+    // thread keep waiting for the next real surface rather than consuming a null one.
+    if (render_surface == nullptr) {
+        next_surface = surface;
+        return;
+    }
+
+    const vk::SurfaceKHR created = CreateSurface(instance.GetInstance(), emu_window);
+    if (!created) {
+        // Treat a window we cannot wrap like a window we never saw: wait for the next one.
+        LOG_ERROR(Render_Vulkan, "Could not create a surface for the new window, ignoring it");
+        last_render_surface = nullptr;
+        next_surface = surface;
+        return;
+    }
+    next_surface = created;
     recreate_surface_cv.notify_one();
 #endif
 }
 
+void PresentWindow::MarkPresentationLost(const char* why) {
+    if (!presentation_lost.exchange(true, std::memory_order_relaxed)) {
+        LOG_CRITICAL(Render_Vulkan, "Giving up on presenting to this window: {}", why);
+    }
+}
+
 void PresentWindow::CopyToSwapchain(Frame* frame) {
+    if (IsPresentationLost()) {
+        return;
+    }
+
+    u32 recreate_attempts = 0;
     const auto recreate_swapchain = [&] {
 #ifdef ANDROID
-        {
+        // A surface problem is solved by the next surface the frontend hands us, so wait for
+        // one. A device problem is not; retry on the surface we have, or we would sit here
+        // until the user happens to rotate the screen.
+        if (swapchain.GetRecreateReason() != Swapchain::RecreateReason::Device) {
             std::unique_lock lock{recreate_surface_mutex};
             recreate_surface_cv.wait(lock, [this]() { return surface != next_surface; });
             surface = next_surface;
+            // A fresh surface is a fresh start; only attempts on the same surface count.
+            recreate_attempts = 0;
         }
 #endif
+        recreate_attempts++;
         std::scoped_lock submit_lock{scheduler.submit_mutex};
-        graphics_queue.waitIdle();
+        try {
+            graphics_queue.waitIdle();
+        } catch (const vk::SystemError& err) {
+            LOG_CRITICAL(Render_Vulkan, "Queue wait before swapchain recreation failed: {}",
+                         err.what());
+        }
         swapchain.Create(frame->width, frame->height, surface, low_refresh_rate);
     };
 
@@ -396,6 +465,10 @@ void PresentWindow::CopyToSwapchain(Frame* frame) {
 #endif
 
     while (!swapchain.AcquireNextImage()) {
+        if (recreate_attempts >= MAX_SWAPCHAIN_RECREATE_ATTEMPTS) {
+            MarkPresentationLost("swapchain could not be recreated");
+            return;
+        }
         recreate_swapchain();
     }
 
@@ -504,9 +577,12 @@ void PresentWindow::CopyToSwapchain(Frame* frame) {
 
     try {
         graphics_queue.submit(submit_info, frame->present_done);
-    } catch (vk::DeviceLostError& err) {
-        LOG_CRITICAL(Render_Vulkan, "Device lost during present submit: {}", err.what());
-        UNREACHABLE();
+    } catch (const vk::SystemError& err) {
+        // Device lost (or out of memory). The process used to abort here; the game state is
+        // still intact, so fail the window and let the frontend offer to save and exit.
+        LOG_CRITICAL(Render_Vulkan, "Present submit failed: {}", err.what());
+        MarkPresentationLost("present submit failed");
+        return;
     }
 
     swapchain.Present();

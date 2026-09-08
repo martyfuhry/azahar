@@ -635,14 +635,35 @@ void Java_org_citra_citra_1emu_NativeLibrary_secondarySurfaceChanged(JNIEnv* env
     LOG_INFO(Frontend, "Secondary Surface changed");
 }
 
+// Shared by surfaceDestroyed/secondarySurfaceDestroyed: releases the native window and tells
+// the EmuWindow and the renderer that it is gone. The renderer notification matters for Vulkan:
+// its present window remembers the last window it wrapped so that repeated surfaceChanged()
+// calls for the same window do not create a second surface, and a new window allocated at the
+// old address would otherwise be mistaken for it and never presented to (black screen).
+static void ReleaseSurface(ANativeWindow*& surface, EmuWindow_Android* emu_window,
+                           bool is_secondary) {
+    if (surface == nullptr) {
+        return;
+    }
+    ANativeWindow_release(surface);
+    surface = nullptr;
+
+    bool notify = false;
+    if (emu_window) {
+        notify = emu_window->OnSurfaceChanged(nullptr);
+    }
+
+    auto& system = Core::System::GetInstance();
+    if (notify && system.IsPoweredOn()) {
+        system.GPU().Renderer().NotifySurfaceChanged(is_secondary);
+    }
+}
+
 void Java_org_citra_citra_1emu_NativeLibrary_secondarySurfaceDestroyed(
     JNIEnv* env, [[maybe_unused]] jobject obj) {
     std::scoped_lock lock(surface_mutex);
 
-    if (s_secondary_surface != nullptr) {
-        ANativeWindow_release(s_secondary_surface);
-        s_secondary_surface = nullptr;
-    }
+    ReleaseSurface(s_secondary_surface, secondary_window.get(), true);
 
     LOG_INFO(Frontend, "Secondary Surface Destroyed");
 }
@@ -651,13 +672,9 @@ void Java_org_citra_citra_1emu_NativeLibrary_surfaceDestroyed([[maybe_unused]] J
                                                               [[maybe_unused]] jobject obj) {
     std::scoped_lock lock(surface_mutex);
 
-    if (s_surface != nullptr) {
-        ANativeWindow_release(s_surface);
-        s_surface = nullptr;
-        if (window) {
-            window->OnSurfaceChanged(s_surface);
-        }
-    }
+    ReleaseSurface(s_surface, window.get(), false);
+
+    LOG_INFO(Frontend, "Surface Destroyed");
 }
 
 void Java_org_citra_citra_1emu_NativeLibrary_doFrame([[maybe_unused]] JNIEnv* env,

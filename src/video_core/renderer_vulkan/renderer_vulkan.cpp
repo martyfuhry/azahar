@@ -239,6 +239,10 @@ void RendererVulkan::RenderToWindow(PresentWindow& window, const Layout::Framebu
     if (!Settings::values.use_skip_duplicate_frames.GetValue() ||
         Core::PerfStats::game_frames_updated) {
         Frame* frame = window.GetRenderFrame();
+        if (!frame) {
+            ReportPresentationLost();
+            return;
+        }
 
         if (layout.width != frame->width || layout.height != frame->height) {
             window.WaitPresent();
@@ -259,6 +263,21 @@ void RendererVulkan::RenderToWindow(PresentWindow& window, const Layout::Framebu
             screenRendered = true;
         }
     }
+}
+
+void RendererVulkan::ReportPresentationLost() {
+    // Presentation failed in a way swapchain recreation could not repair (typically
+    // VK_ERROR_DEVICE_LOST after the GPU was suspended). The emulated system is intact, so
+    // rather than aborting the process, hand the frontend a core error: it offers the user the
+    // choice to stop, at which point an autosave or a manual save can still be written.
+    if (presentation_lost_reported) {
+        return;
+    }
+    presentation_lost_reported = true;
+    LOG_CRITICAL(Render_Vulkan, "Presentation lost; reporting a core error instead of aborting");
+    system.SetStatus(Core::System::ResultStatus::ErrorUnknown,
+                     "The Vulkan device or window was lost and could not be recovered. Rendering "
+                     "has stopped; save your progress and restart the application.");
 }
 
 void RendererVulkan::LoadFBToScreenInfo(const Pica::FramebufferConfig& framebuffer,
