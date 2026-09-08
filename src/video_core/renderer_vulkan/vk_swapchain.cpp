@@ -35,6 +35,8 @@ void Swapchain::Create(u32 width_, u32 height_, vk::SurfaceKHR surface_, bool lo
     height = height_;
     low_refresh_rate = low_refresh_rate_;
     needs_recreation = false;
+    // recreate_reason is deliberately kept: a device-class failure stays a device-class failure
+    // until a creation succeeds, so a lost device cannot be mistaken for a surface change.
 
     // The old swapchain must be gone before the surface it was created on can be released.
     Destroy();
@@ -51,6 +53,12 @@ void Swapchain::Create(u32 width_, u32 height_, vk::SurfaceKHR surface_, bool lo
     // have a different image count and the old indices could be out of range.
     frame_index = 0;
     image_index = 0;
+
+    if (!surface) {
+        LOG_ERROR(Render_Vulkan, "No surface available, deferring swapchain creation");
+        MarkForRecreation(RecreateReason::Surface);
+        return;
+    }
 
     SetPresentMode();
     if (needs_recreation) {
@@ -94,15 +102,34 @@ void Swapchain::Create(u32 width_, u32 height_, vk::SurfaceKHR surface_, bool lo
         swapchain = instance.GetDevice().createSwapchainKHR(swapchain_info);
     } catch (vk::SurfaceLostKHRError&) {
         LOG_ERROR(Render_Vulkan, "Surface lost during swapchain creation");
-        needs_recreation = true;
+        MarkForRecreation(RecreateReason::Surface);
+        return;
+    } catch (vk::NativeWindowInUseKHRError&) {
+        // The window is still bound to a previous swapchain (or an EGL surface); the next
+        // surface the frontend hands us will be free. Aborting here was upstream #2455.
+        LOG_ERROR(Render_Vulkan, "Native window in use during swapchain creation");
+        MarkForRecreation(RecreateReason::Surface);
         return;
     } catch (vk::SystemError& err) {
-        LOG_CRITICAL(Render_Vulkan, "{}", err.what());
-        throw;
+        // Device lost, out of memory or a driver error. Throwing out of the present thread
+        // would std::terminate the process; report the failure to the caller instead so it
+        // can retry a bounded number of times and then fail the window gracefully.
+        LOG_CRITICAL(Render_Vulkan, "Swapchain creation failed: {}", err.what());
+        MarkForRecreation(RecreateReason::Device);
+        return;
     }
 
     SetupImages();
     RefreshSemaphores();
+    recreate_reason = RecreateReason::None;
+}
+
+void Swapchain::MarkForRecreation(RecreateReason reason) {
+    needs_recreation = true;
+    // A surface problem never downgrades a device problem: the device one is the fatal class.
+    if (recreate_reason != RecreateReason::Device) {
+        recreate_reason = reason;
+    }
 }
 
 bool Swapchain::AcquireNextImage() {
@@ -122,11 +149,14 @@ bool Swapchain::AcquireNextImage() {
     case vk::Result::eSuboptimalKHR:
     case vk::Result::eErrorSurfaceLostKHR:
     case vk::Result::eErrorOutOfDateKHR:
-        needs_recreation = true;
+        MarkForRecreation(RecreateReason::Surface);
         break;
     default:
-        LOG_CRITICAL(Render_Vulkan, "Swapchain acquire returned unknown result {}", result);
-        UNREACHABLE();
+        // VK_ERROR_DEVICE_LOST after the GPU was suspended, or any result this code does not
+        // know about. Recreating the swapchain is the only recovery available at this level;
+        // the caller bounds the number of attempts and fails the window if none succeeds.
+        LOG_ERROR(Render_Vulkan, "Swapchain acquire returned unexpected result {}", result);
+        MarkForRecreation(RecreateReason::Device);
         break;
     }
 
@@ -146,21 +176,42 @@ void Swapchain::Present() {
     try {
         [[maybe_unused]] vk::Result result = instance.GetPresentQueue().presentKHR(present_info);
     } catch (vk::OutOfDateKHRError&) {
-        needs_recreation = true;
+        MarkForRecreation(RecreateReason::Surface);
         return;
     } catch (vk::SurfaceLostKHRError&) {
-        needs_recreation = true;
+        MarkForRecreation(RecreateReason::Surface);
         return;
     } catch (const vk::SystemError& err) {
-        LOG_CRITICAL(Render_Vulkan, "Swapchain presentation failed {}", err.what());
-        UNREACHABLE();
+        // Device lost or out of memory: same recovery as an unexpected acquire result.
+        LOG_ERROR(Render_Vulkan, "Swapchain presentation failed: {}", err.what());
+        MarkForRecreation(RecreateReason::Device);
+        return;
     }
 
     frame_index = (frame_index + 1) % image_count;
 }
 
 void Swapchain::FindPresentFormat() {
-    const auto formats = instance.GetPhysicalDevice().getSurfaceFormatsKHR(surface);
+    // Assume RGBA until the surface tells us otherwise; every Android and desktop driver we
+    // target supports it, and it keeps the renderer constructible when the surface is already
+    // gone at this point (screen turned off during boot or during a savestate load).
+    surface_format.format = vk::Format::eR8G8B8A8Unorm;
+    surface_format.colorSpace = vk::ColorSpaceKHR::eSrgbNonlinear;
+
+    std::vector<vk::SurfaceFormatKHR> formats;
+    try {
+        if (surface) {
+            formats = instance.GetPhysicalDevice().getSurfaceFormatsKHR(surface);
+        }
+    } catch (vk::SurfaceLostKHRError&) {
+        LOG_ERROR(Render_Vulkan, "Surface lost while querying surface formats");
+    } catch (vk::SystemError& err) {
+        LOG_ERROR(Render_Vulkan, "Querying surface formats failed: {}", err.what());
+    }
+    if (formats.empty()) {
+        MarkForRecreation(RecreateReason::Surface);
+        return;
+    }
 
     // If there is a single undefined surface format, the device doesn't care, so we'll just use
     // RGBA.
@@ -186,12 +237,21 @@ void Swapchain::FindPresentFormat() {
 }
 
 void Swapchain::SetPresentMode() {
+    if (!surface) {
+        MarkForRecreation(RecreateReason::Surface);
+        return;
+    }
+
     std::vector<vk::PresentModeKHR> modes;
     try {
         modes = instance.GetPhysicalDevice().getSurfacePresentModesKHR(surface);
     } catch (vk::SurfaceLostKHRError&) {
         LOG_ERROR(Render_Vulkan, "Surface lost during swapchain creation");
-        needs_recreation = true;
+        MarkForRecreation(RecreateReason::Surface);
+        return;
+    } catch (vk::SystemError& err) {
+        LOG_CRITICAL(Render_Vulkan, "Querying present modes failed: {}", err.what());
+        MarkForRecreation(RecreateReason::Device);
         return;
     }
 
@@ -242,7 +302,11 @@ void Swapchain::SetSurfaceProperties() {
         capabilities = instance.GetPhysicalDevice().getSurfaceCapabilitiesKHR(surface);
     } catch (vk::SurfaceLostKHRError&) {
         LOG_ERROR(Render_Vulkan, "Surface lost during swapchain creation");
-        needs_recreation = true;
+        MarkForRecreation(RecreateReason::Surface);
+        return;
+    } catch (vk::SystemError& err) {
+        LOG_CRITICAL(Render_Vulkan, "Querying surface capabilities failed: {}", err.what());
+        MarkForRecreation(RecreateReason::Device);
         return;
     }
 

@@ -130,6 +130,14 @@ vk::SurfaceKHR CreateSurface(vk::Instance instance, const Frontend::EmuWindow& e
     vk::SurfaceKHR surface{};
     vk::Result res;
 
+    // A failure below returns a null surface rather than aborting: on Android the window can
+    // be destroyed by the OS between surfaceChanged() and this call, and the caller (the present
+    // window) knows how to wait for the next one.
+    if (window_info.type != Frontend::WindowSystemType::Headless && !window_info.render_surface) {
+        LOG_ERROR(Render_Vulkan, "No native window to create a surface from");
+        return vk::SurfaceKHR{};
+    }
+
 #if defined(VK_USE_PLATFORM_WIN32_KHR)
     if (window_info.type == Frontend::WindowSystemType::Windows) {
         const vk::Win32SurfaceCreateInfoKHR win32_ci = {
@@ -141,7 +149,7 @@ vk::SurfaceKHR CreateSurface(vk::Instance instance, const Frontend::EmuWindow& e
             vk::Result::eSuccess) {
             LOG_CRITICAL(Render_Vulkan, "Failed to initialize Win32 surface: {}",
                          vk::to_string(res));
-            UNREACHABLE();
+            return vk::SurfaceKHR{};
         }
     }
 #elif defined(VK_USE_PLATFORM_XLIB_KHR) || defined(VK_USE_PLATFORM_WAYLAND_KHR)
@@ -154,7 +162,7 @@ vk::SurfaceKHR CreateSurface(vk::Instance instance, const Frontend::EmuWindow& e
         if ((res = instance.createXlibSurfaceKHR(&xlib_ci, nullptr, &surface)) !=
             vk::Result::eSuccess) {
             LOG_ERROR(Render_Vulkan, "Failed to initialize Xlib surface: {}", vk::to_string(res));
-            UNREACHABLE();
+            return vk::SurfaceKHR{};
         }
     } else if (window_info.type == Frontend::WindowSystemType::Wayland) {
         const vk::WaylandSurfaceCreateInfoKHR wayland_ci = {
@@ -166,7 +174,7 @@ vk::SurfaceKHR CreateSurface(vk::Instance instance, const Frontend::EmuWindow& e
             vk::Result::eSuccess) {
             LOG_ERROR(Render_Vulkan, "Failed to initialize Wayland surface: {}",
                       vk::to_string(res));
-            UNREACHABLE();
+            return vk::SurfaceKHR{};
         }
     }
 #elif defined(VK_USE_PLATFORM_METAL_EXT)
@@ -179,7 +187,7 @@ vk::SurfaceKHR CreateSurface(vk::Instance instance, const Frontend::EmuWindow& e
             vk::Result::eSuccess) {
             LOG_CRITICAL(Render_Vulkan, "Failed to initialize MacOS surface: {}",
                          vk::to_string(res));
-            UNREACHABLE();
+            return vk::SurfaceKHR{};
         }
     }
 #elif defined(VK_USE_PLATFORM_ANDROID_KHR)
@@ -192,14 +200,17 @@ vk::SurfaceKHR CreateSurface(vk::Instance instance, const Frontend::EmuWindow& e
             vk::Result::eSuccess) {
             LOG_CRITICAL(Render_Vulkan, "Failed to initialize Android surface: {}",
                          vk::to_string(res));
-            UNREACHABLE();
+            return vk::SurfaceKHR{};
         }
     }
 #endif
 
     if (!surface) {
-        LOG_CRITICAL(Render_Vulkan, "Presentation not supported on this platform");
-        UNREACHABLE();
+        // Either the window system is not one this build can present to, or (Android) the
+        // EmuWindow was constructed before it had a native window and is still typed Headless.
+        // The present window defers swapchain creation until a real surface arrives.
+        LOG_CRITICAL(Render_Vulkan, "Presentation not supported on window system type {}",
+                     static_cast<int>(window_info.type));
     }
 
     return surface;

@@ -43,7 +43,8 @@ public:
     /// Waits for all queued frames to finish presenting.
     void WaitPresent();
 
-    /// Returns the last used render frame.
+    /// Returns the last used render frame, or nullptr if presentation to this window has
+    /// failed permanently (see IsPresentationLost).
     Frame* GetRenderFrame();
 
     /// Recreates the render frame to match provided parameters.
@@ -54,6 +55,13 @@ public:
 
     /// This is called to notify the rendering backend of a surface change
     void NotifySurfaceChanged();
+
+    /// True once presentation to this window has failed in a way that swapchain recreation
+    /// could not fix (device lost, or a driver error that survived every retry). The window
+    /// drops frames from then on instead of aborting the process.
+    [[nodiscard]] bool IsPresentationLost() const noexcept {
+        return presentation_lost.load(std::memory_order_relaxed);
+    }
 
     [[nodiscard]] vk::RenderPass Renderpass() const noexcept {
         return present_renderpass;
@@ -71,6 +79,9 @@ private:
     void PresentThread(std::stop_token token);
 
     void CopyToSwapchain(Frame* frame);
+
+    /// Gives up on presenting to this window; see IsPresentationLost.
+    void MarkPresentationLost(const char* why);
 
     vk::RenderPass CreateRenderpass();
 
@@ -99,6 +110,7 @@ private:
     bool vsync_enabled{};
     bool blit_supported;
     bool use_present_thread{true};
+    std::atomic_bool presentation_lost{false};
     void* last_render_surface{};
 };
 

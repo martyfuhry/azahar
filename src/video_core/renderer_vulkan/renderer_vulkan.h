@@ -99,6 +99,9 @@ private:
     void RenderToWindow(PresentWindow& window, const Layout::FramebufferLayout& layout,
                         bool flipped);
 
+    /// Raises a core error (once) after a present window gave up on presenting.
+    void ReportPresentationLost();
+
     void DrawScreens(Frame* frame, const Layout::FramebufferLayout& layout, bool flipped);
     void DrawBottomScreen(const Layout::FramebufferLayout& layout,
                           const Common::Rectangle<u32>& bottom_screen);
@@ -153,6 +156,7 @@ private:
     bool isSecondaryWindow;
     bool secondaryWindowEnabled;
     bool screenRendered;
+    bool presentation_lost_reported{false};
 };
 
 } // namespace Vulkan

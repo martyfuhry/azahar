@@ -29,6 +29,20 @@ public:
     /// Presents the current image and move to the next one
     void Present();
 
+    /// Why the swapchain currently needs to be recreated.
+    enum class RecreateReason {
+        None,
+        /// The surface changed, is stale or is gone: recreation needs a (new) surface.
+        Surface,
+        /// The device reported an error unrelated to the surface (device lost, out of memory,
+        /// an unexpected result): recreation may be attempted on the same surface.
+        Device,
+    };
+
+    RecreateReason GetRecreateReason() const {
+        return recreate_reason;
+    }
+
     vk::SurfaceKHR GetSurface() const {
         return surface;
     }
@@ -82,6 +96,9 @@ private:
     /// Destroys current swapchain resources
     void Destroy();
 
+    /// Flags the swapchain for recreation, remembering the most severe reason seen so far
+    void MarkForRecreation(RecreateReason reason);
+
     /// Performs creation of image views and framebuffers from the swapchain images
     void SetupImages();
 
@@ -106,6 +123,7 @@ private:
     u32 image_index = 0;
     u32 frame_index = 0;
     bool needs_recreation = true;
+    RecreateReason recreate_reason = RecreateReason::Surface;
     bool low_refresh_rate;
 };
 
