@@ -8,11 +8,13 @@
 #include <cstdarg>
 #include <cstring>
 #include <mutex>
+#include <thread>
 #include <vector>
 #include <cubeb/cubeb.h>
 #include "audio_core/audio_types.h"
 #include "audio_core/cubeb_sink.h"
 #include "common/logging/log.h"
+#include "common/thread.h"
 
 namespace AudioCore {
 
@@ -43,8 +45,24 @@ struct CubebSink::Impl {
     static void LogCallback(char const* fmt, ...);
 };
 
+/**
+ * cubeb_init spawns backend helper threads (AAudio: a state-polling thread and its notifier) from
+ * the calling thread, and Linux threads inherit the creator's name. Calling it from a short-lived
+ * thread with a name of our own keeps those helpers from showing up as "NativeEmulation" (or
+ * whatever the emulation thread is called) in thread inventories.
+ */
+static int InitCubebNamed(cubeb** ctx, const char* context_name) {
+    int result = CUBEB_ERROR;
+    std::thread init_thread([&] {
+        Common::SetCurrentThreadName("cubeb");
+        result = cubeb_init(ctx, context_name, nullptr);
+    });
+    init_thread.join();
+    return result;
+}
+
 CubebSink::CubebSink(std::string_view target_device_name) : impl(std::make_unique<Impl>()) {
-    if (cubeb_init(&impl->ctx, "Azahar Output", nullptr) != CUBEB_OK) {
+    if (InitCubebNamed(&impl->ctx, "Azahar Output") != CUBEB_OK) {
         LOG_CRITICAL(Audio_Sink, "cubeb_init failed");
         return;
     }
@@ -245,7 +263,7 @@ std::vector<std::string> ListCubebSinkDevices() {
     std::vector<std::string> device_list;
     cubeb* ctx;
 
-    if (cubeb_init(&ctx, "Azahar Output Device Enumerator", nullptr) != CUBEB_OK) {
+    if (InitCubebNamed(&ctx, "Azahar Output Device Enumerator") != CUBEB_OK) {
         LOG_CRITICAL(Audio_Sink, "cubeb_init failed");
         return {};
     }
