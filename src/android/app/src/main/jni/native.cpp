@@ -585,6 +585,13 @@ static Core::System::ResultStatus RunCitra(const std::string& filepath) {
 
     window->MakeCurrent();
 
+    // System::Load brings up the Vulkan device, the swapchain and the whole HLE service tree
+    // before it returns, which on a cold boot is the longest single stretch of the boot with
+    // nothing to show for it. Emit the Prepare stage first so the loading UI is bound to its
+    // view model and carries a message for that stretch, rather than only waking up once the
+    // disk shader cache load below starts reporting.
+    LoadDiskCacheProgress(VideoCore::LoadCallbackStage::Prepare, 0, 0, "");
+
     const Core::System::ResultStatus load_result{
         system.Load(*window, filepath, secondary_window.get())};
 

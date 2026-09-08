@@ -32,7 +32,16 @@ object DiskShaderCacheProgress {
 
         emulationActivity.runOnUiThread {
             when (stage) {
-                LoadCallbackStage.Prepare -> prepareViewModel()
+                // Emitted once before the core is loaded (the Vulkan device, the swapchain and
+                // the HLE service tree are built there, with nothing to show for it) and again
+                // by the rasterizer just before it starts reading the disk cache. The second one
+                // sets the same message, which a StateFlow conflates away.
+                LoadCallbackStage.Prepare -> {
+                    prepareViewModel()
+                    emulationViewModel.setShaderMessage(
+                        emulationActivity.getString(R.string.initializing_emulation)
+                    )
+                }
 
                 LoadCallbackStage.Decompile -> emulationViewModel.updateProgress(
                     emulationActivity.getString(R.string.preparing_shaders),
