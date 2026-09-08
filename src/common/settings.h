@@ -35,6 +35,17 @@ enum class InitTicks : u32 {
     Fixed = 1,
 };
 
+/**
+ * What the frontend does with the automatic "save on exit" state (Core::AutoSaveStateSlot).
+ * Anything but Off writes the state whenever emulation is backgrounded or shut down; the mode
+ * only decides what happens with it when the same title boots again.
+ */
+enum class AutoSaveMode : u32 {
+    Off = 0,    ///< Never write or load an autosave
+    Ask = 1,    ///< Offer to resume from a fresh autosave
+    Always = 2, ///< Resume from a fresh autosave without asking
+};
+
 /** Defines the layout option for desktop and mobile landscape */
 enum class LayoutOption : u32 { // Shouldn't these have set numbers to prevent last two from
                                 // shifting? -OS
@@ -509,6 +520,7 @@ struct Values {
     Setting<bool> allow_plugin_loader{true, Keys::allow_plugin_loader};
     Setting<u16> steps_per_hour{0, Keys::steps_per_hour};
     Setting<bool> apply_region_free_patch{true, Keys::apply_region_free_patch};
+    Setting<AutoSaveMode> autosave_mode{AutoSaveMode::Off, Keys::autosave_mode};
 
     // Renderer
     // clang-format off

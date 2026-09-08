@@ -28,6 +28,7 @@ foreach(KEY IN ITEMS
     "allow_plugin_loader"
     "steps_per_hour"
     "apply_region_free_patch"
+    "autosave_mode"
     "graphics_api"
     "physical_device"
     "use_gles"
