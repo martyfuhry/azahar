@@ -557,7 +557,12 @@ class EmulationFragment :
     }
 
     override fun onPause() {
-        if (NativeLibrary.isRunning()) {
+        // Keyed on our own state rather than NativeLibrary.isRunning(), which is still false
+        // while the title boots: a pause requested during the loading screen is parked by the
+        // core and applied the moment its run loop starts, so backgrounding mid-boot no longer
+        // leaves the guest running headless with audio. A pause from the in-game menu is a
+        // no-op here, and a stopped state is left alone so run() can still start the thread.
+        if (!emulationState.isStopped) {
             emulationState.pause()
             // Requested here rather than awaited: the emulation thread writes the state while
             // Android walks us through the rest of the background transition
@@ -1835,7 +1840,10 @@ class EmulationFragment :
                 when (state) {
                     State.RUNNING -> {
                         NativeLibrary.surfaceDestroyed()
-                        state = State.PAUSED
+                        // Losing the surface while we still believe we are running (only
+                        // possible mid-boot, since onPause pauses first otherwise) must pause
+                        // the core too, not just flip our own state to PAUSED
+                        pause()
                     }
 
                     State.PAUSED -> {

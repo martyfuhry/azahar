@@ -100,6 +100,13 @@ jlong ptm_current_title_id = std::numeric_limits<jlong>::max(); // Arbitrary def
 std::atomic<bool> stop_run{true};
 std::atomic<bool> pause_emulation{false};
 
+// A pause that arrived while stop_run was still true, i.e. while RunCitra() was still
+// booting the title. RunCitra() clears pause_emulation once the load has finished, which used
+// to discard any pause the activity requested during the loading screen and leave the guest
+// running (with audio) behind the launcher. The request is parked here instead and becomes the
+// initial pause_emulation value when the run loop starts. Written under paused_mutex.
+std::atomic<bool> pause_requested{false};
+
 std::mutex paused_mutex;
 std::mutex running_mutex;
 std::condition_variable running_cv;
@@ -462,8 +469,16 @@ static Core::System::ResultStatus RunCitra(const std::string& filepath) {
         return load_result;
     }
 
-    stop_run = false;
-    pause_emulation = false;
+    {
+        // Published together, under the lock the UI thread uses to read stop_run before
+        // deciding whether a pause applies now or must wait for this point
+        std::scoped_lock pause_lock{paused_mutex};
+        stop_run = false;
+        pause_emulation = pause_requested.exchange(false);
+    }
+    if (pause_emulation) {
+        LOG_INFO(Frontend, "Starting paused: the activity was backgrounded during boot");
+    }
 
     LoadDiskCacheProgress(VideoCore::LoadCallbackStage::Prepare, 0, 0, "");
 
@@ -995,6 +1010,7 @@ void Java_org_citra_citra_1emu_NativeLibrary_unPauseEmulation([[maybe_unused]] J
         // writing it outside the lock could slip in between that check and the wait
         std::scoped_lock lock{paused_mutex};
         pause_emulation = false;
+        pause_requested = false;
     }
     running_cv.notify_all();
     auto* handler = InputManager::NDKMotionHandler();
@@ -1005,7 +1021,15 @@ void Java_org_citra_citra_1emu_NativeLibrary_unPauseEmulation([[maybe_unused]] J
 
 void Java_org_citra_citra_1emu_NativeLibrary_pauseEmulation([[maybe_unused]] JNIEnv* env,
                                                             [[maybe_unused]] jobject obj) {
-    pause_emulation = true;
+    {
+        std::scoped_lock lock{paused_mutex};
+        if (stop_run) {
+            // Still booting (or nothing running): take effect the moment the loop starts
+            pause_requested = true;
+        } else {
+            pause_emulation = true;
+        }
+    }
     auto* handler = InputManager::NDKMotionHandler();
     if (handler) {
         handler->DisableSensors();
@@ -1235,6 +1259,12 @@ void Java_org_citra_citra_1emu_NativeLibrary_run__Ljava_lang_String_2(JNIEnv* en
     {
         std::scoped_lock lock{paused_mutex};
         stop_run = true;
+        // A pause that reached us after the previous run had already ended (the activity
+        // pausing on its way out after a guest-initiated shutdown, say) is not meant for the
+        // title about to boot. Cleared here, at the very start of the new emulation thread,
+        // rather than inside RunCitra(), so that a pause arriving while this thread waits for
+        // the previous run to release running_mutex is still honoured.
+        pause_requested = false;
     }
     running_cv.notify_all();
 
