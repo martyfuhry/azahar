@@ -30,6 +30,8 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
 
@@ -80,6 +82,22 @@
             </intent-filter>
 
         </activity>
+
+        <!-- Holds a persistent notification while a game is running so the process is not
+             killed when backgrounded. Emulation is not media playback in the MediaSession sense,
+             so it is declared as a "special use" service, which is the type the yuzu-lineage
+             emulators use; the subtype property is what Play Console review reads. stopWithTask
+             makes swiping Azahar out of Recents end the service (and with it the process) even
+             if EmulationActivity.onDestroy never runs. -->
+        <service
+            android:name="org.citra.citra_emu.utils.ForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse"
+            android:stopWithTask="true">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Keep emulation running in background" />
+        </service>
 
         <activity
             android:name="org.citra.citra_emu.features.cheats.ui.CheatsActivity"

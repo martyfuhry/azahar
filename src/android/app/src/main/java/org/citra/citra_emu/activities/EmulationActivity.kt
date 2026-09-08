@@ -11,6 +11,7 @@ import android.content.SharedPreferences
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.view.InputDevice
 import android.view.KeyEvent
@@ -53,6 +54,7 @@ import org.citra.citra_emu.utils.DirectoryInitialization
 import org.citra.citra_emu.utils.EmulationLifecycleUtil
 import org.citra.citra_emu.utils.EmulationMenuSettings
 import org.citra.citra_emu.utils.FileBrowserHelper
+import org.citra.citra_emu.utils.ForegroundService
 import org.citra.citra_emu.utils.Log
 import org.citra.citra_emu.utils.NetPlayManager
 import org.citra.citra_emu.utils.PermissionsHandler
@@ -79,6 +81,18 @@ class EmulationActivity : AppCompatActivity() {
             this.finish()
         }
     }
+
+    // Android 13+ hides the foreground service's notification until the user grants
+    // POST_NOTIFICATIONS; the service itself runs either way. Re-posting on grant makes the
+    // notification appear without restarting the game.
+    private val notificationPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted ->
+            if (isGranted) {
+                ForegroundService.start(this)
+            } else {
+                Log.warning("[EmulationActivity] Notification permission denied.")
+            }
+        }
 
     private val emulationFragment: EmulationFragment
         get() {
@@ -107,7 +121,11 @@ class EmulationActivity : AppCompatActivity() {
 
         ThemeUtil.setTheme(this)
 
-        if (!ensureUserDirectoryReady()) {
+        // A stale running-game notification (the game already exited) carries no game to
+        // launch, so treat tapping it like opening the app.
+        val staleNotificationTap = intent.action == ForegroundService.ACTION_RETURN_TO_GAME
+
+        if (staleNotificationTap || !ensureUserDirectoryReady()) {
             super.onCreate(null) // null: don't restore fragments into an activity we're killing
             secondaryDisplayManager = SecondaryDisplay(this)
             startActivity(
@@ -157,6 +175,12 @@ class EmulationActivity : AppCompatActivity() {
 
         EmulationLifecycleUtil.addShutdownHook(onShutdown)
 
+        // Keep the process alive while the game is backgrounded. Started here so that it covers
+        // the whole lifetime of this activity, and stopped in onDestroy; a configuration change
+        // restarts it along with the activity.
+        ForegroundService.start(this)
+        requestNotificationPermissionIfNeeded()
+
         isEmulationRunning = true
         instance = this
 
@@ -177,6 +201,11 @@ class EmulationActivity : AppCompatActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        if (intent.action == ForegroundService.ACTION_RETURN_TO_GAME) {
+            // The foreground service's notification only brings the user back to the game
+            // that is already running; there is nothing to launch.
+            return
+        }
         setIntent(intent)
 
         NativeLibrary.stopEmulation()
@@ -254,8 +283,22 @@ class EmulationActivity : AppCompatActivity() {
         instance = null
         secondaryDisplayManager.releasePresentation()
         secondaryDisplayManager.releaseVD()
+        ForegroundService.stop(this)
 
         super.onDestroy()
+    }
+
+    private fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            return
+        }
+        val granted = checkSelfPermission(permission.POST_NOTIFICATIONS)
+        if (granted == PackageManager.PERMISSION_GRANTED) {
+            return
+        }
+        // The system stops showing the dialog after the user has denied it twice, so this
+        // cannot nag; the setup wizard also offers the permission on first run.
+        notificationPermissionLauncher.launch(permission.POST_NOTIFICATIONS)
     }
 
     override fun onRequestPermissionsResult(
