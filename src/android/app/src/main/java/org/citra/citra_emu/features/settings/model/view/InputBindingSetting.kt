@@ -578,6 +578,28 @@ class InputBindingSetting(val abstractSetting: AbstractSetting, titleId: Int) :
                 ).toSet()
         }
 
+        /**
+         * Returns true for an axis d-pad (HAT_X/HAT_Y), false for a button d-pad
+         * (DPAD_UP/DOWN/LEFT/RIGHT). Prefers axis when both are present, and defaults to
+         * axis when detection fails.
+         */
+        fun usesAxisDpad(device: InputDevice?): Boolean {
+            if (device == null) return true
+
+            val hasAxisDpad = device.motionRanges.any {
+                it.axis == MotionEvent.AXIS_HAT_X || it.axis == MotionEvent.AXIS_HAT_Y
+            }
+            if (hasAxisDpad) return true
+
+            val dpadKeyCodes = intArrayOf(
+                KeyEvent.KEYCODE_DPAD_UP,
+                KeyEvent.KEYCODE_DPAD_DOWN,
+                KeyEvent.KEYCODE_DPAD_LEFT,
+                KeyEvent.KEYCODE_DPAD_RIGHT
+            )
+            return !device.hasKeys(*dpadKeyCodes).any { it }
+        }
+
         fun clearAllBindings() {
             val prefs = PreferenceManager.getDefaultSharedPreferences(CitraApplication.appContext)
             val editor = prefs.edit()
