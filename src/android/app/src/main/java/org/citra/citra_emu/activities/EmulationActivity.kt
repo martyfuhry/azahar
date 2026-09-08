@@ -152,8 +152,9 @@ class EmulationActivity : AppCompatActivity() {
 
         NativeLibrary.initMultiplayer()
 
+        // The Presentation needs this activity's window token, so it is created from
+        // onStart/onResume rather than here; see SecondaryDisplay.onActivityStarted.
         secondaryDisplayManager = SecondaryDisplay(this)
-        secondaryDisplayManager.updateDisplay()
 
         binding = ActivityEmulationBinding.inflate(layoutInflater)
         hotkeyUtility = HotkeyUtility(screenAdjustmentUtil, this)
@@ -288,8 +289,16 @@ class EmulationActivity : AppCompatActivity() {
     // On some devices, the system bars will not disappear on first boot or after some
     // rotations. Here we set full screen immersive repeatedly in onResume and in
     // onWindowFocusChanged to prevent the unwanted status bar state.
+    override fun onStart() {
+        super.onStart()
+        // The window token exists from here until onStop, so this is where the bottom-screen
+        // Presentation is (re)created after a lid cycle or a trip through Home.
+        secondaryDisplayManager.onActivityStarted()
+    }
+
     override fun onResume() {
         enableFullscreenImmersive()
+        secondaryDisplayManager.onActivityResumed()
         if (isEmulationReady) {
             // If emulation is ready then unblock rotation
             isRotationBlocked = false
@@ -304,7 +313,7 @@ class EmulationActivity : AppCompatActivity() {
     }
 
     override fun onStop() {
-        secondaryDisplayManager.releasePresentation()
+        secondaryDisplayManager.onActivityStopped()
         super.onStop()
     }
 
@@ -333,7 +342,7 @@ class EmulationActivity : AppCompatActivity() {
 
     public override fun onRestart() {
         super.onRestart()
-        secondaryDisplayManager.updateDisplay()
+        // onStart runs right after this and re-picks the display with a window token in hand.
         NativeLibrary.reloadCameraDevices()
     }
 
