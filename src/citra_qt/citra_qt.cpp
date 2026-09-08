@@ -37,6 +37,7 @@
 #include <QtDBus/QtDBus>
 #include "common/linux/gamemode.h"
 #endif
+#include "audio_core/dsp_interface.h"
 #include "citra_meta/common_strings.h"
 #include "citra_qt/aboutdialog.h"
 #include "citra_qt/applets/mii_selector.h"
@@ -2606,6 +2607,10 @@ void GMainWindow::OnResumeGame(bool first_start) {
     if (!first_start) {
         // The system clock did not advance while paused; catch it up with the host clock
         system.RequestClockResync();
+        // Restart the audio output stream stopped by OnPauseGame
+        if (system.IsPoweredOn()) {
+            system.DSP().PauseOutput(false);
+        }
     }
     emu_thread->SetRunning(true);
     system.frame_limiter.SetFrameAdvancing(false);
@@ -2644,6 +2649,11 @@ void GMainWindow::OnRestartGame() {
 void GMainWindow::OnPauseGame() {
     system.frame_limiter.SetFrameAdvancing(true);
     qt_cameras->PauseCameras();
+    // Stop the audio output stream so the device callback thread idles instead of fetching
+    // silence for as long as the game sits paused
+    if (system.IsPoweredOn()) {
+        system.DSP().PauseOutput(true);
+    }
 
     play_time_manager->Stop();
 
