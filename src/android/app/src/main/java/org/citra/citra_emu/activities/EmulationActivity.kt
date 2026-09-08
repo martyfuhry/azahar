@@ -49,6 +49,7 @@ import org.citra.citra_emu.model.Game
 import org.citra.citra_emu.ui.main.MainActivity
 import org.citra.citra_emu.utils.BuildUtil
 import org.citra.citra_emu.utils.CitraDirectoryUtils
+import org.citra.citra_emu.utils.ControllerAutoMapper
 import org.citra.citra_emu.utils.ControllerMappingHelper
 import org.citra.citra_emu.utils.DirectoryInitialization
 import org.citra.citra_emu.utils.EmulationLifecycleUtil
@@ -155,6 +156,9 @@ class EmulationActivity : AppCompatActivity() {
 
         binding = ActivityEmulationBinding.inflate(layoutInflater)
         hotkeyUtility = HotkeyUtility(screenAdjustmentUtil, this)
+        // A handheld's built-in pad is already connected here; seed a default mapping for it
+        // before the first press so nothing falls through to Android as BACK/HOME.
+        ControllerAutoMapper.seedFromConnectedDevices()
         setContentView(binding.root)
 
         val navHostFragment =
@@ -406,6 +410,9 @@ class EmulationActivity : AppCompatActivity() {
             return super.dispatchKeyEvent(event)
         }
 
+        // Pads connected after launch are seeded on their first press.
+        ControllerAutoMapper.seedIfUnmapped(event.device)
+
         when (event.action) {
             KeyEvent.ACTION_DOWN -> {
                 // On some devices, the back gesture / button press is not intercepted by androidx
@@ -457,6 +464,7 @@ class EmulationActivity : AppCompatActivity() {
             return true
         }
         val input = event.device
+        ControllerAutoMapper.seedIfUnmapped(input)
         val motions = input.motionRanges
         val axisValuesCirclePad = floatArrayOf(0.0f, 0.0f)
         val axisValuesCStick = floatArrayOf(0.0f, 0.0f)

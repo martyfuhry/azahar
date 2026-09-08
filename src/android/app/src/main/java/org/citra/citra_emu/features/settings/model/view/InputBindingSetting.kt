@@ -578,6 +578,14 @@ class InputBindingSetting(val abstractSetting: AbstractSetting, titleId: Int) :
                 ).toSet()
         }
 
+        /** Returns true if any button or axis binding has been written. */
+        fun hasAnyBinding(): Boolean {
+            val prefs = PreferenceManager.getDefaultSharedPreferences(CitraApplication.appContext)
+            return prefs.all.keys.any {
+                it.startsWith(INPUT_MAPPING_PREFIX) || it in allBindingKeys
+            }
+        }
+
         /**
          * Returns true for an axis d-pad (HAT_X/HAT_Y), false for a button d-pad
          * (DPAD_UP/DOWN/LEFT/RIGHT). Prefers axis when both are present, and defaults to
