@@ -280,6 +280,18 @@ static void OfferAutoSaveOnBoot(Core::System& system, u64 program_id) {
  * abandons the request on its own after five seconds. Always publishes completion, so a UI
  * thread waiting in waitForAutoSave() is released even when nothing could be saved.
  */
+/**
+ * Stops or restarts the audio output stream. Safe to call from the UI thread as well as the
+ * emulation thread: the DSP serializes it internally, and the emulation thread repeats the call
+ * when it parks, so a request that raced a savestate reload (which rebuilds the DSP) is not lost.
+ */
+static void SetAudioOutputPaused(bool paused) {
+    auto& system = Core::System::GetInstance();
+    if (system.IsPoweredOn()) {
+        system.DSP().PauseOutput(paused);
+    }
+}
+
 static void FlushAutoSave(Core::System& system) {
     const u32 requested = autosave_requested.load();
     if (autosave_completed.load() == requested) {
@@ -514,10 +526,14 @@ static Core::System::ResultStatus RunCitra(const std::string& filepath) {
                 }
             }
         } else {
-            // Ensure no audio bleeds out while game is paused
+            // Ensure no audio bleeds out while game is paused. The volume covers the window
+            // until the output stream has actually stopped; the stop itself is what keeps the
+            // audio device thread from waking this process ~200 times a second while it sits in
+            // the background (the largest term of the paused CPU load Android kills us for).
             const float volume = Settings::values.volume.GetValue();
             SCOPE_EXIT({ Settings::values.volume = volume; });
             Settings::values.volume = 0;
+            SetAudioOutputPaused(true);
 
             // The activity going to the background asked for an autosave just before parking
             // us here; write it now, while Android still lets the process run
@@ -528,6 +544,12 @@ static Core::System::ResultStatus RunCitra(const std::string& filepath) {
                 return !pause_emulation || stop_run || autosave_completed != autosave_requested;
             });
             window->PollEvents();
+            pause_lock.unlock();
+            // An autosave request wakes us without unpausing; only restart the stream when we
+            // are really about to run again
+            if (!pause_emulation && !stop_run) {
+                SetAudioOutputPaused(false);
+            }
         }
     }
 
@@ -990,6 +1012,9 @@ void Java_org_citra_citra_1emu_NativeLibrary_unPauseEmulation([[maybe_unused]] J
     // the host clock before the emulation thread runs its next frame
     auto& system = Core::System::GetInstance();
     system.RequestClockResync();
+    // Restart the output stream before the emulation thread wakes so the first frames it
+    // produces are not dropped on the floor waiting for the device
+    SetAudioOutputPaused(false);
     {
         // The emulation thread checks this under paused_mutex before it parks on running_cv;
         // writing it outside the lock could slip in between that check and the wait
@@ -1006,6 +1031,10 @@ void Java_org_citra_citra_1emu_NativeLibrary_unPauseEmulation([[maybe_unused]] J
 void Java_org_citra_citra_1emu_NativeLibrary_pauseEmulation([[maybe_unused]] JNIEnv* env,
                                                             [[maybe_unused]] jobject obj) {
     pause_emulation = true;
+    // Stop the output stream right away rather than one frame later when the emulation thread
+    // notices the flag; it repeats this once it parks, which also covers a DSP rebuilt by a
+    // savestate load in between
+    SetAudioOutputPaused(true);
     auto* handler = InputManager::NDKMotionHandler();
     if (handler) {
         handler->DisableSensors();
