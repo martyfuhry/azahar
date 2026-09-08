@@ -1175,7 +1175,13 @@ void RendererVulkan::SwapBuffers() {
     }
 #endif
     if (!screenRendered) {
-        scheduler.Finish();
+        // A skipped duplicate frame never reaches RenderToWindow, so nothing has submitted the
+        // work the rasterizer recorded since the last present. Submit it so the GPU stays busy
+        // and the scheduler tick still advances once per vblank (the texture runtime's deferred
+        // deletion and the stream buffers key their reuse off it), but do not wait for it: the
+        // next presented frame flushes behind it in queue order, so no frame can be shown before
+        // the draws it depends on have executed.
+        scheduler.Flush();
     }
 
     system.perf_stats->EndSwap();
