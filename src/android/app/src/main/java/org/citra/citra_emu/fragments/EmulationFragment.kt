@@ -589,6 +589,22 @@ class EmulationFragment :
         super.onDetach()
     }
 
+    // Reached instead of a recreation now that EmulationActivity handles configuration
+    // changes itself: refresh the views onCreateView and onResume derive from the orientation
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        if (_binding == null) {
+            return
+        }
+        val isPortrait = newConfig.orientation == Configuration.ORIENTATION_PORTRAIT
+        binding.inGameMenu.menu.findItem(R.id.menu_landscape_screen_layout).isVisible =
+            !isPortrait
+        binding.inGameMenu.menu.findItem(R.id.menu_portrait_screen_layout).isVisible =
+            isPortrait
+        binding.surfaceInputOverlay.refreshControls()
+        updateStatsPosition(IntSetting.PERFORMANCE_OVERLAY_POSITION.int)
+    }
+
     override fun onDestroy() {
         if (::emulationState.isInitialized && requireActivity().isFinishing) {
             emulationState.stop()

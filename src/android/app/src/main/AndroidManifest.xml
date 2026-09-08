@@ -67,11 +67,18 @@
             android:theme="@style/Theme.Citra.Main"
             android:label="@string/preferences_settings"/>
 
+        <!-- configChanges: a rotation, a fold/unfold (screen size, layout and density all
+             change on a foldable or a dual-screen handheld) or a theme change must not recreate
+             this activity. Recreation destroys the render surface and the secondary-display
+             presentation, re-runs the whole boot bookkeeping in onCreate and races the
+             emulation thread's surface recreation; EmulationActivity.onConfigurationChanged
+             re-applies what depends on the configuration instead. -->
         <activity
             android:name="org.citra.citra_emu.activities.EmulationActivity"
             android:exported="true"
             android:theme="@style/Theme.Citra.Main"
-            android:launchMode="singleTop">
+            android:launchMode="singleTop"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|uiMode|density">
 
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />

@@ -8,6 +8,7 @@ import android.Manifest.permission
 import android.annotation.SuppressLint
 import android.content.Intent
 import android.content.SharedPreferences
+import android.content.res.Configuration
 import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -305,6 +306,24 @@ class EmulationActivity : AppCompatActivity() {
     override fun onStop() {
         secondaryDisplayManager.releasePresentation()
         super.onStop()
+    }
+
+    // The manifest declares configChanges for rotation, screen size/layout/density and
+    // uiMode, so none of them recreates the activity any more (see AndroidManifest.xml).
+    // Re-apply here what onCreate would have derived from the new configuration; the
+    // SurfaceView resizes on its own and hands the core the new dimensions through
+    // surfaceChanged, and the fragment refreshes its orientation-dependent views.
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        enableFullscreenImmersive()
+        NativeLibrary.swapScreens(
+            EmulationMenuSettings.swapScreens,
+            windowManager.defaultDisplay.rotation
+        )
+        if (!isRotationBlocked) {
+            applyOrientationSettings()
+        }
+        secondaryDisplayManager.updateDisplay()
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
