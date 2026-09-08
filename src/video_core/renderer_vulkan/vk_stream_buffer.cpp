@@ -7,6 +7,7 @@
 // Refer to the license.txt file included.
 
 #include <algorithm>
+#include <chrono>
 #include <limits>
 #include "common/alignment.h"
 #include "common/assert.h"
@@ -116,7 +117,8 @@ std::tuple<u8*, u32, bool> StreamBuffer::Map(u32 size, u64 alignment) {
         size = Common::AlignUp(size, instance.NonCoherentAtomSize());
     }
 
-    ASSERT(size <= stream_buffer_size);
+    ASSERT_MSG(size <= stream_buffer_size, "{} buffer request of {} KiB exceeds the {} KiB buffer",
+               BufferTypeName(type), size / 1024, stream_buffer_size / 1024);
     mapped_size = size;
 
     if (alignment > 0) {
@@ -135,6 +137,12 @@ std::tuple<u8*, u32, bool> StreamBuffer::Map(u32 size, u64 alignment) {
         std::swap(previous_watches, current_watches);
         wait_cursor = 0;
         wait_bound = 0;
+
+        num_wraps++;
+        LOG_DEBUG(Render_Vulkan,
+                  "{} buffer wrapped at tick {} (wraps {}, blocked {} times for {} ms total)",
+                  BufferTypeName(type), scheduler.CurrentTick(), num_wraps, num_blocked,
+                  blocked_ns / 1'000'000);
     }
 
     const u64 mapped_upper_bound = offset + size;
@@ -275,7 +283,14 @@ void StreamBuffer::WaitPendingOperations(u64 requested_upper_bound) {
     while (requested_upper_bound > wait_bound && wait_cursor < *invalidation_mark) {
         auto& watch = previous_watches[wait_cursor];
         wait_bound = watch.upper_bound;
-        scheduler.Wait(watch.tick);
+        if (!scheduler.IsFree(watch.tick)) {
+            const auto start = std::chrono::steady_clock::now();
+            scheduler.Wait(watch.tick);
+            blocked_ns += static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                               std::chrono::steady_clock::now() - start)
+                                               .count());
+            num_blocked++;
+        }
         ++wait_cursor;
     }
 }

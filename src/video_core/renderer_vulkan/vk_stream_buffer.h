@@ -1,3 +1,7 @@
+// Copyright 2026 Citra Emulator Project / Azahar Emulator Project
+// Licensed under GPLv2 or any later version
+// Refer to the license.txt file included.
+
 // Copyright 2019 yuzu Emulator Project
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
@@ -44,6 +48,11 @@ public:
         return buffer;
     }
 
+    /// Returns the size of the buffer that was actually allocated.
+    u64 Size() const noexcept {
+        return stream_buffer_size;
+    }
+
 private:
     struct Watch {
         u64 tick{};
@@ -81,6 +90,10 @@ private:
     std::vector<Watch> previous_watches; ///< Watches used in the previous iteration.
     std::size_t wait_cursor{};           ///< Last watch being waited for completion.
     u64 wait_bound{};                    ///< Highest offset being watched for completion.
+
+    u64 num_wraps{};   ///< Times the iterator wrapped back to the start of the buffer.
+    u64 num_blocked{}; ///< Times a wait for the previous cycle actually blocked.
+    u64 blocked_ns{};  ///< Total time spent blocked on the previous cycle.
 };
 
 } // namespace Vulkan
