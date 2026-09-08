@@ -21,6 +21,7 @@ import org.citra.citra_emu.NativeLibrary
 import org.citra.citra_emu.features.settings.model.BooleanSetting
 import org.citra.citra_emu.features.settings.model.IntSetting
 import org.citra.citra_emu.utils.Log
+import org.citra.citra_emu.utils.RefreshRateUtil
 
 class SecondaryDisplay(val context: Context) : DisplayManager.DisplayListener {
     private var pres: SecondaryDisplayPresentation? = null
@@ -301,6 +302,11 @@ class SecondaryDisplayPresentation(
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // The bottom panel never got a refresh-rate hint before: the util was only ever applied
+        // to the activity window. The Thor's bottom screen is 60hz native so this is usually a
+        // no-op there, but an external display used as the second screen is not.
+        RefreshRateUtil.enforceRefreshRate(this, sixtyHz = true)
+
         window?.setFlags(
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
@@ -322,6 +328,7 @@ class SecondaryDisplayPresentation(
                 height: Int
             ) {
                 Log.debug("SecondaryDisplay Surface changed: ${width}x$height")
+                RefreshRateUtil.requestSurfaceFrameRate(holder.surface)
                 parent.updateSurface()
             }
 
