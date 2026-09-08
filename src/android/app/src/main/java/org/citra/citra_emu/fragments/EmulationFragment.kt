@@ -530,6 +530,7 @@ class EmulationFragment :
     override fun onResume() {
         super.onResume()
         Choreographer.getInstance().postFrameCallback(this)
+        resumePerfStatsUpdates()
         if (NativeLibrary.isRunning()) {
             emulationState.unpause()
 
@@ -556,13 +557,21 @@ class EmulationFragment :
     }
 
     override fun onPause() {
-        if (NativeLibrary.isRunning()) {
+        // Keyed on our own state rather than NativeLibrary.isRunning(), which is still false
+        // while the title boots: a pause requested during the loading screen is parked by the
+        // core and applied the moment its run loop starts, so backgrounding mid-boot no longer
+        // leaves the guest running headless with audio. A pause from the in-game menu is a
+        // no-op here, and a stopped state is left alone so run() can still start the thread.
+        if (!emulationState.isStopped) {
             emulationState.pause()
             // Requested here rather than awaited: the emulation thread writes the state while
             // Android walks us through the rest of the background transition
             emulationState.requestAutoSave()
         }
         Choreographer.getInstance().removeFrameCallback(this)
+        // The overlay timer would otherwise keep waking the UI thread (and crossing JNI) once a
+        // second for as long as the game sits in the background
+        suspendPerfStatsUpdates()
         super.onPause()
     }
 
@@ -580,10 +589,28 @@ class EmulationFragment :
         super.onDetach()
     }
 
+    // Reached instead of a recreation now that EmulationActivity handles configuration
+    // changes itself: refresh the views onCreateView and onResume derive from the orientation
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        if (_binding == null) {
+            return
+        }
+        val isPortrait = newConfig.orientation == Configuration.ORIENTATION_PORTRAIT
+        binding.inGameMenu.menu.findItem(R.id.menu_landscape_screen_layout).isVisible =
+            !isPortrait
+        binding.inGameMenu.menu.findItem(R.id.menu_portrait_screen_layout).isVisible =
+            isPortrait
+        binding.surfaceInputOverlay.refreshControls()
+        updateStatsPosition(IntSetting.PERFORMANCE_OVERLAY_POSITION.int)
+    }
+
     override fun onDestroy() {
         if (::emulationState.isInitialized && requireActivity().isFinishing) {
             emulationState.stop()
         }
+        suspendPerfStatsUpdates()
+        perfStatsUpdater = null
         EmulationLifecycleUtil.removeHook(onPause)
         EmulationLifecycleUtil.removeHook(onShutdown)
         if (gameFd != null) {
@@ -1494,9 +1521,8 @@ class EmulationFragment :
     }
 
     fun updateShowPerformanceOverlay() {
-        if (perfStatsUpdater != null) {
-            perfStatsUpdateHandler.removeCallbacks(perfStatsUpdater!!)
-        }
+        suspendPerfStatsUpdates()
+        perfStatsUpdater = null
 
         if (BooleanSetting.PERF_OVERLAY_ENABLE.boolean) {
             @Suppress("UnusedVariable")
@@ -1583,11 +1609,25 @@ class EmulationFragment :
                 }
                 perfStatsUpdateHandler.postDelayed(perfStatsUpdater!!, 1000)
             }
-            perfStatsUpdateHandler.post(perfStatsUpdater!!)
+            resumePerfStatsUpdates()
             binding.performanceOverlayShowText.visibility = View.VISIBLE
         } else {
             binding.performanceOverlayShowText.visibility = View.GONE
         }
+    }
+
+    /**
+     * Starts the once-a-second overlay refresh if the overlay is on. Safe to call repeatedly;
+     * the previous posting is cancelled first so the runnable never runs twice per tick.
+     */
+    private fun resumePerfStatsUpdates() {
+        val updater = perfStatsUpdater ?: return
+        perfStatsUpdateHandler.removeCallbacks(updater)
+        perfStatsUpdateHandler.post(updater)
+    }
+
+    private fun suspendPerfStatsUpdates() {
+        perfStatsUpdater?.let { perfStatsUpdateHandler.removeCallbacks(it) }
     }
 
     private fun updateStatsPosition(position: Int) {
@@ -1816,7 +1856,10 @@ class EmulationFragment :
                 when (state) {
                     State.RUNNING -> {
                         NativeLibrary.surfaceDestroyed()
-                        state = State.PAUSED
+                        // Losing the surface while we still believe we are running (only
+                        // possible mid-boot, since onPause pauses first otherwise) must pause
+                        // the core too, not just flip our own state to PAUSED
+                        pause()
                     }
 
                     State.PAUSED -> {
