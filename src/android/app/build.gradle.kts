@@ -20,7 +20,8 @@ plugins {
  * This lets us upload a new build at most every 10 seconds for the
  * next 680 years.
  */
-val autoVersion = (((System.currentTimeMillis() / 1000) - 1451606400) / 10).toInt()
+val autoVersion = (project.findProperty("versionCodeOverride") as String?)?.toInt()
+    ?: (((System.currentTimeMillis() / 1000) - 1451606400) / 10).toInt()
 val abiFilter = listOf("arm64-v8a", "x86_64")
 
 val downloadedJniLibsPath = "${layout.buildDirectory.get().asFile.path}/downloadedJniLibs"

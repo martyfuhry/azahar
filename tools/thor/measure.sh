@@ -73,8 +73,10 @@ cmd_install() {
     local apk=${1:?apk path} want got
     hdr "install: $apk"
     want=$(unzip -p "$apk" AndroidManifest.xml 2>/dev/null | strings | grep -m1 -oE '[0-9a-f]{7,}-(vanilla|googleplay|debug)' || true)
-    if [ -z "$want" ] && command -v aapt2 >/dev/null; then
-        want=$(aapt2 dump badging "$apk" | grep -oE "versionName='[^']*'" | cut -d"'" -f2)
+    if [ -z "$want" ]; then
+        local aapt2
+        aapt2=$(command -v aapt2 || ls "${ANDROID_HOME:-/usr/local/lib/android/sdk}"/build-tools/*/aapt2 2>/dev/null | tail -1)
+        [ -n "$aapt2" ] && want=$("$aapt2" dump badging "$apk" | grep -oE "versionName='[^']*'" | cut -d"'" -f2)
     fi
     say "apk versionName: ${want:-<unreadable; pass the hash as \$2>}"
     [ -n "${2:-}" ] && want=$2
@@ -83,7 +85,7 @@ cmd_install() {
     adb install -r -d -t "$apk" 2>&1 | tail -1
     got=$(ash dumpsys package "$PKG" | tr -d '\r' | grep -m1 versionName | cut -d= -f2)
     say "installed:       $got"
-    [ -n "$want" ] && [ "$got" != "$want" ] && die "installed package is $got, not $want (older versionCode? rebuild, or uninstall first)"
+    [ -n "$want" ] && [ "$got" != "$want" ] && die "installed package is $got, not $want (older versionCode? the -d -t downgrade should have worked; NEVER uninstall, it drops the folder grant)"
     return 0
 }
 
