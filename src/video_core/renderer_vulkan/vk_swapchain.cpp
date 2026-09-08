@@ -25,17 +25,27 @@ Swapchain::Swapchain(const Instance& instance_, u32 width, u32 height, vk::Surfa
 
 Swapchain::~Swapchain() {
     Destroy();
-    instance.GetInstance().destroySurfaceKHR(surface);
+    if (surface) {
+        instance.GetInstance().destroySurfaceKHR(surface);
+    }
 }
 
 void Swapchain::Create(u32 width_, u32 height_, vk::SurfaceKHR surface_, bool low_refresh_rate_) {
     width = width_;
     height = height_;
-    surface = surface_;
     low_refresh_rate = low_refresh_rate_;
     needs_recreation = false;
 
+    // The old swapchain must be gone before the surface it was created on can be released.
     Destroy();
+
+    // The swapchain owns its surface: when the frontend hands us a new one (Android hands us a
+    // fresh ANativeWindow on every rotation and on every return from the background) the
+    // previous VkSurfaceKHR would otherwise leak, and with it a reference to a dead window.
+    if (surface && surface != surface_) {
+        instance.GetInstance().destroySurfaceKHR(surface);
+    }
+    surface = surface_;
 
     // Start every swapchain generation from the first semaphore/image: the new swapchain may
     // have a different image count and the old indices could be out of range.

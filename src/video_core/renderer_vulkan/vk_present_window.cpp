@@ -365,6 +365,15 @@ void PresentWindow::NotifySurfaceChanged() {
         next_surface = vk::SurfaceKHR{};
     }
 
+    // surfaceDestroyed(): the window is gone. Forget it, so that a future window which happens
+    // to be allocated at the same address is not mistaken for this one and skipped (which
+    // would leave the present thread waiting for a surface forever), and make the present
+    // thread keep waiting for the next real surface rather than consuming a null one.
+    if (render_surface == nullptr) {
+        next_surface = surface;
+        return;
+    }
+
     next_surface = CreateSurface(instance.GetInstance(), emu_window);
     recreate_surface_cv.notify_one();
 #endif
