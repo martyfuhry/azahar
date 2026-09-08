@@ -37,6 +37,11 @@ void Swapchain::Create(u32 width_, u32 height_, vk::SurfaceKHR surface_, bool lo
 
     Destroy();
 
+    // Start every swapchain generation from the first semaphore/image: the new swapchain may
+    // have a different image count and the old indices could be out of range.
+    frame_index = 0;
+    image_index = 0;
+
     SetPresentMode();
     if (needs_recreation) {
         return;
@@ -264,12 +269,18 @@ void Swapchain::Destroy() {
         device.destroySwapchainKHR(swapchain);
         swapchain = VK_NULL_HANDLE;
     }
-    for (u32 i = 0; i < image_count; i++) {
-        device.destroySemaphore(image_acquired[i]);
-        device.destroySemaphore(present_ready[i]);
+    // Walk the vectors rather than image_count: after Create() bailed out early (surface lost
+    // while the app was being resumed) the vectors are already empty but image_count still
+    // holds the previous generation's count, and this used to destroy dead semaphore handles.
+    for (vk::Semaphore semaphore : image_acquired) {
+        device.destroySemaphore(semaphore);
+    }
+    for (vk::Semaphore semaphore : present_ready) {
+        device.destroySemaphore(semaphore);
     }
     image_acquired.clear();
     present_ready.clear();
+    images.clear();
 }
 
 void Swapchain::RefreshSemaphores() {
