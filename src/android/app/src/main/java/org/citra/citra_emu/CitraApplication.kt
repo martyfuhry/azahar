@@ -8,6 +8,7 @@ import android.annotation.SuppressLint
 import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.content.ComponentCallbacks2
 import android.content.Context
 import android.os.Build
 import org.citra.citra_emu.utils.DirectoryInitialization
@@ -59,6 +60,24 @@ class CitraApplication : Application() {
         logDeviceInfo()
         createNotificationChannel()
         NativeLibrary.playTimeManagerInit()
+    }
+
+    /**
+     * Android asks for memory back here. Everything at or above
+     * [ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN] is reported once the app has left the
+     * foreground (UI_HIDDEN, then BACKGROUND, MODERATE and COMPLETE as the process moves up
+     * the low-memory killer's list), and a paused emulation can give up its cached GPU
+     * surfaces and free heap pages there, which is what keeps a backgrounded game alive on an
+     * 8 GB device. The levels below it (RUNNING_MODERATE, _LOW, _CRITICAL) arrive while the
+     * game is on screen and are deliberately ignored: the release costs a hitch when the
+     * surfaces are uploaded again, which is not worth paying mid-frame.
+     */
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (level >= ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN) {
+            Log.info("Trimming memory at level $level")
+            NativeLibrary.trimMemory()
+        }
     }
 
     fun logDeviceInfo() {

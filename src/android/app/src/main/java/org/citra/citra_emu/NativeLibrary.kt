@@ -196,6 +196,16 @@ object NativeLibrary {
     external fun pauseEmulation()
 
     /**
+     * Asks the running emulation to release what it can rebuild on demand: the cached GPU
+     * surfaces, and the free pages the allocator is holding. Called from
+     * [CitraApplication.onTrimMemory] when Android reports memory pressure, which happens right
+     * after the app is backgrounded. The emulation thread carries the request out at the point
+     * where it parks, waking up for it if it is already parked; the surfaces are re-uploaded on
+     * resume, which costs one hitch. Cheap to call when nothing is running.
+     */
+    external fun trimMemory()
+
+    /**
      * Asks the emulation thread to write the automatic "save on exit" state
      * ([AUTOSAVE_SLOT]) at its next opportunity, waking it if it is paused. Cheap to call
      * from lifecycle callbacks; pair with [waitForAutoSave] before the process may die.
