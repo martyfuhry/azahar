@@ -844,7 +844,12 @@ void Java_org_citra_citra_1emu_NativeLibrary_unPauseEmulation([[maybe_unused]] J
     // the host clock before the emulation thread runs its next frame
     auto& system = Core::System::GetInstance();
     system.RequestClockResync();
-    pause_emulation = false;
+    {
+        // The emulation thread checks this under paused_mutex before it parks on running_cv;
+        // writing it outside the lock could slip in between that check and the wait
+        std::scoped_lock lock{paused_mutex};
+        pause_emulation = false;
+    }
     running_cv.notify_all();
     auto* handler = InputManager::NDKMotionHandler();
     if (handler) {
@@ -863,11 +868,15 @@ void Java_org_citra_citra_1emu_NativeLibrary_pauseEmulation([[maybe_unused]] JNI
 
 void Java_org_citra_citra_1emu_NativeLibrary_stopEmulation([[maybe_unused]] JNIEnv* env,
                                                            [[maybe_unused]] jobject obj) {
-    if (stop_run.exchange(true)) {
-        // stop_run was already true
-        return;
+    {
+        // See unPauseEmulation for why the flags are written under the lock
+        std::scoped_lock lock{paused_mutex};
+        if (stop_run.exchange(true)) {
+            // stop_run was already true
+            return;
+        }
+        pause_emulation = false;
     }
-    pause_emulation = false;
     if (window) {
         window->StopPresenting();
     }
@@ -1054,10 +1063,11 @@ void Java_org_citra_citra_1emu_NativeLibrary_run__Ljava_lang_String_2(JNIEnv* en
                                                                       jstring j_path) {
     const std::string path = GetJString(env, j_path);
 
-    if (!stop_run) {
+    {
+        std::scoped_lock lock{paused_mutex};
         stop_run = true;
-        running_cv.notify_all();
     }
+    running_cv.notify_all();
 
     const Core::System::ResultStatus result{RunCitra(path)};
     if (result != Core::System::ResultStatus::Success) {
