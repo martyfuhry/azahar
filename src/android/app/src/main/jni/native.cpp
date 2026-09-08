@@ -491,6 +491,13 @@ static Core::System::ResultStatus RunCitra(const std::string& filepath) {
     LoadDiskCacheProgress(VideoCore::LoadCallbackStage::Complete, 0, 0, "");
 
     SCOPE_EXIT({
+        {
+            // The loop may be leaving on the guest's own request (a title powering off), in
+            // which case nobody set stop_run. Set it before the windows go away so that the
+            // UI thread's doFrame() and isRunning() see the shutdown rather than a live core.
+            std::scoped_lock pause_lock{paused_mutex};
+            stop_run = true;
+        }
         TryShutdown();
         // Release a UI thread still waiting for an autosave this thread will never perform
         {
@@ -678,6 +685,14 @@ void Java_org_citra_citra_1emu_NativeLibrary_surfaceDestroyed([[maybe_unused]] J
 void Java_org_citra_citra_1emu_NativeLibrary_doFrame([[maybe_unused]] JNIEnv* env,
                                                      [[maybe_unused]] jobject obj) {
     if (stop_run || pause_emulation) {
+        return;
+    }
+    // The windows are reset by TryShutdown() on the emulation thread under surface_mutex.
+    // Checking stop_run alone leaves a window in which this Choreographer callback dereferences
+    // a window that is being destroyed. Rather than block the UI thread behind a boot or a
+    // savestate load (both hold the mutex for a long time), skip the frame when it is busy.
+    std::unique_lock lock{surface_mutex, std::try_to_lock};
+    if (!lock.owns_lock()) {
         return;
     }
     if (window) {
