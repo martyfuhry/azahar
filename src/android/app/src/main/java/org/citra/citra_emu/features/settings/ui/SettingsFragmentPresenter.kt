@@ -1980,6 +1980,18 @@ class SettingsFragmentPresenter(private val fragmentView: SettingsFragmentView) 
                 )
             )
             add(
+                SliderSetting(
+                    IntSetting.PERF_LOG_INTERVAL,
+                    R.string.perf_log_interval,
+                    R.string.perf_log_interval_description,
+                    0,
+                    60,
+                    "s",
+                    IntSetting.PERF_LOG_INTERVAL.key,
+                    IntSetting.PERF_LOG_INTERVAL.defaultValue.toFloat()
+                )
+            )
+            add(
                 SwitchSetting(
                     BooleanSetting.ENABLE_RPC_SERVER,
                     R.string.enable_rpc_server,
