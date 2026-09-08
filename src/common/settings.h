@@ -546,7 +546,16 @@ struct Values {
     Setting<bool> dump_command_buffers{false, Keys::dump_command_buffers};
     SwitchableSetting<bool> spirv_shader_gen{true, Keys::spirv_shader_gen};
     SwitchableSetting<bool> disable_spirv_optimizer{true, Keys::disable_spirv_optimizer};
+#ifdef ANDROID
+    // Mobile GPU drivers compile pipelines far more slowly than desktop ones, and the stock
+    // Qualcomm driver has no extended dynamic state, so rasterizer/depth-stencil state folds
+    // into the pipeline key and multiplies the number of pipelines a title needs. Compiling
+    // them on the worker threads instead of blocking the Vulkan worker trades a moment of
+    // pop-in for the stutter storm a cold cache otherwise causes.
+    SwitchableSetting<bool> async_shader_compilation{true, Keys::async_shader_compilation};
+#else
     SwitchableSetting<bool> async_shader_compilation{false, Keys::async_shader_compilation};
+#endif
     SwitchableSetting<bool> async_presentation{true, Keys::async_presentation};
     SwitchableSetting<bool> use_hw_shader{true, Keys::use_hw_shader};
     SwitchableSetting<bool> use_disk_shader_cache{true, Keys::use_disk_shader_cache};
