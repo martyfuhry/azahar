@@ -1,4 +1,4 @@
-// Copyright 2016 Citra Emulator Project
+// Copyright 2016-2026 Citra Emulator Project / Azahar Emulator Project
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
@@ -76,6 +76,14 @@ unsigned int SDL2Sink::GetNativeSampleRate() const {
 
 void SDL2Sink::SetCallback(std::function<void(s16*, std::size_t)> cb) {
     impl->cb = cb;
+}
+
+void SDL2Sink::SetPaused(bool paused) {
+    if (impl->audio_device_id <= 0) {
+        return;
+    }
+    // SDL stops calling back (and the device thread sleeps) while the device is paused
+    SDL_PauseAudioDevice(impl->audio_device_id, paused ? 1 : 0);
 }
 
 void SDL2Sink::Impl::Callback(void* impl_, u8* buffer, int buffer_size_in_bytes) {

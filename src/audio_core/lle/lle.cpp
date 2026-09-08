@@ -1,4 +1,4 @@
-// Copyright 2018-2025 Citra Emulator Project / Azahar Emulator Project
+// Copyright 2018-2026 Citra Emulator Project / Azahar Emulator Project
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
@@ -152,6 +152,7 @@ struct DspLle::Impl final {
     static constexpr u32 TeakraSlice = 16384;
 
     void TeakraThread() {
+        Common::SetCurrentThreadName("DspLle");
         while (true) {
             teakra.Run(TeakraSlice);
             teakra_slice_barrier.Sync();

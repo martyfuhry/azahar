@@ -26,6 +26,9 @@ public:
     }
 
     void PushSamples(const void* data, std::size_t num_samples) override;
+
+    // The frontend owns the output device and stops calling retro_run while paused
+    void SetPaused(bool) override {}
 };
 
 std::vector<std::string> ListLibretroSinkDevices();
