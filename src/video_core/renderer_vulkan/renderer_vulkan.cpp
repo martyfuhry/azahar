@@ -105,6 +105,22 @@ static bool IsLowRefreshRate() {
     // We have no available method of checking refresh rate. Just assume that everything is fine :)
     return false;
 }
+
+/// True while the frontend has a native surface behind this window, i.e. while there is
+/// somewhere to present to.
+///
+/// Only Android can answer this meaningfully, and only there does it change during a session:
+/// its secondary EmuWindow is created once at boot and kept alive for the whole session (the
+/// emulation thread reads it without a lock, so it must not be destroyed underneath it), while
+/// the surface behind it appears and disappears with the Presentation on the second panel. On
+/// every other platform a window that exists always has a surface.
+[[nodiscard]] bool HasWindowSurface(const Frontend::EmuWindow& window) {
+#ifdef ANDROID
+    return window.GetWindowInfo().render_surface != nullptr;
+#else
+    return true;
+#endif
+}
 } // Anonymous namespace
 
 RendererVulkan::RendererVulkan(Core::System& system, Pica::PicaCore& pica_,
@@ -129,7 +145,9 @@ RendererVulkan::RendererVulkan(Core::System& system, Pica::PicaCore& pica_,
     CompileShaders();
     BuildLayouts();
     BuildPipelines();
-    if (secondary_window) {
+    // No surface behind the secondary window means no secondary display is in use; SwapBuffers()
+    // builds the present window (and its swapchain) if and when one appears.
+    if (secondary_window && HasWindowSurface(*secondary_window)) {
         secondary_present_window_ptr = std::make_unique<PresentWindow>(
             *secondary_window, instance, scheduler, IsLowRefreshRate());
     }
@@ -1155,11 +1173,13 @@ void RendererVulkan::SwapBuffers() {
 #endif
 
 #ifdef ANDROID
-    if (secondary_window) {
-        secondaryWindowEnabled = true;
-    } else {
-        secondaryWindowEnabled = false;
-    }
+    // The secondary EmuWindow exists for the whole session, but it is only worth a frame while a
+    // real second display is behind it. The frontend puts a Presentation (and therefore a
+    // surface) on it only for a real, non-virtual secondary display, so an absent surface means
+    // there is nothing to present to. secondaryWindowEnabled also decides which pass clears
+    // Core::PerfStats::game_frames_updated in RenderToWindow(): with the secondary pass skipped,
+    // the primary one has to take that over or duplicate-frame skipping stops working entirely.
+    secondaryWindowEnabled = secondary_window != nullptr && HasWindowSurface(*secondary_window);
 #endif
 
     const Layout::FramebufferLayout& layout = render_window.GetFramebufferLayout();
@@ -1182,14 +1202,29 @@ void RendererVulkan::SwapBuffers() {
 #endif
 
 #ifdef ANDROID
-    if (secondary_window) {
-        const auto& secondary_layout = secondary_window->GetFramebufferLayout();
-        if (!secondary_present_window_ptr) {
-            secondary_present_window_ptr = std::make_unique<PresentWindow>(
-                *secondary_window, instance, scheduler, IsLowRefreshRate());
+    PresentWindow* secondary_present = nullptr;
+    {
+        // Only this thread creates or destroys the present window; the lock is there so the UI
+        // thread's NotifySurfaceChanged() never dereferences one that is going away. Once we
+        // have looked it up here it stays alive for the rest of this frame.
+        std::scoped_lock lock{secondary_present_mutex};
+        if (secondaryWindowEnabled) {
+            if (!secondary_present_window_ptr) {
+                secondary_present_window_ptr = std::make_unique<PresentWindow>(
+                    *secondary_window, instance, scheduler, IsLowRefreshRate());
+            }
+            secondary_present = secondary_present_window_ptr.get();
+        } else if (secondary_present_window_ptr) {
+            // The second display went away (Presentation dismissed, panel unplugged, setting
+            // turned off). Give its swapchain images back instead of holding a second 1080p
+            // swapchain for a window nobody can see; it is rebuilt above if the display returns.
+            secondary_present_window_ptr.reset();
         }
+    }
+    if (secondary_present) {
+        const auto& secondary_layout = secondary_window->GetFramebufferLayout();
         isSecondaryWindow = true;
-        RenderToWindow(*secondary_present_window_ptr, secondary_layout, false);
+        RenderToWindow(*secondary_present, secondary_layout, false);
         secondary_window->PollEvents();
     }
 #endif
@@ -1513,6 +1548,9 @@ bool RendererVulkan::TryRenderScreenshotWithHostMemory() {
 
 void RendererVulkan::NotifySurfaceChanged(bool is_second_window) {
     if (is_second_window) {
+        // Called from the frontend's UI thread while SwapBuffers() may be creating or
+        // destroying this window on the emulation thread.
+        std::scoped_lock lock{secondary_present_mutex};
         if (secondary_present_window_ptr) {
             secondary_present_window_ptr->NotifySurfaceChanged();
         }
