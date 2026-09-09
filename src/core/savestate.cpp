@@ -267,8 +267,9 @@ AutoSaveResumeStatus CheckAutoSaveState(u64 program_id, u64 movie_id, SaveStateI
                                GetLastNormalBootTime(program_id), info);
 }
 
-u32 PickAutoSaveWriteSlot(const std::vector<SaveStateInfo>& generations) {
-    // A generation nothing has ever been written to costs nothing to claim
+u32 PickAutoSaveWriteSlot(const std::vector<SaveStateInfo>& generations, u32 avoid_slot) {
+    // A generation nothing has ever been written to costs nothing to claim, and can never be the
+    // one this boot selected, because a selected generation is by definition present on disk
     for (u32 generation = 0; generation < AutoSaveGenerationCount; ++generation) {
         const u32 slot = AutoSaveStateSlot + generation;
         if (std::none_of(generations.begin(), generations.end(),
@@ -276,13 +277,23 @@ u32 PickAutoSaveWriteSlot(const std::vector<SaveStateInfo>& generations) {
             return slot;
         }
     }
-    // The ring is full: overwrite the oldest, which ListAutoSaveStates puts last. It is never
-    // the generation this boot resumed from, because that one is the newest.
+    // The ring is full: overwrite the oldest, which ListAutoSaveStates puts last -- but skip the
+    // generation this boot selected. It really can be the oldest one: SelectAutoSaveState returns
+    // the newest generation this build can load, so when every newer generation is a
+    // BuildMismatch it hands back the oldest, and writing there would destroy the only state the
+    // user was offered.
+    for (auto it = generations.rbegin(); it != generations.rend(); ++it) {
+        if (it->slot != avoid_slot) {
+            return it->slot;
+        }
+    }
+    // Unreachable: the ring is full here, so it holds AutoSaveGenerationCount >= 2 distinct
+    // slots, and at most one of them can be avoid_slot.
     return generations.back().slot;
 }
 
-u32 PickAutoSaveWriteSlot(u64 program_id, u64 movie_id) {
-    return PickAutoSaveWriteSlot(ListAutoSaveStates(program_id, movie_id));
+u32 PickAutoSaveWriteSlot(u64 program_id, u64 movie_id, u32 avoid_slot) {
+    return PickAutoSaveWriteSlot(ListAutoSaveStates(program_id, movie_id), avoid_slot);
 }
 
 static CSTHeader MakeHeader(u64 title_id) {

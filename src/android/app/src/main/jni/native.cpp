@@ -270,10 +270,11 @@ static bool OfferAutoSaveOnBoot(Core::System& system, u64 program_id) {
                         .count();
     Core::RecordNormalBoot(program_id, now);
 
-    // Chosen before the first autosave of the session and kept for its whole lifetime. It is
-    // never the generation picked above, so answering "start fresh" to the prompt below does not
-    // put the offered state under this session's writes.
-    session_autosave_slot = Core::PickAutoSaveWriteSlot(program_id, movie_id);
+    // Chosen before the first autosave of the session and kept for its whole lifetime. The
+    // generation selected just above is passed in so it cannot be chosen: answering "start fresh"
+    // to the prompt below, or never seeing it because the mode is Ask and the state is stale,
+    // must not put the offered state under this session's writes.
+    session_autosave_slot = Core::PickAutoSaveWriteSlot(program_id, movie_id, autosave.slot);
 
     if (!AutoSaveEnabled()) {
         return false;

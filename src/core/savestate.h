@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include <limits>
 #include <string>
 #include <vector>
 #include "common/common_types.h"
@@ -48,8 +49,9 @@ static_assert(AutoSaveStateSlot >= SaveStateSlotCount);
  * has actually been played three times, and one file for a title played once.
  */
 constexpr u32 AutoSaveGenerationCount = 3;
-// PickAutoSaveWriteSlot relies on the oldest generation never being the newest one, which needs
-// at least two of them; below that a session would overwrite the state it just resumed from.
+// PickAutoSaveWriteSlot must always be able to avoid the generation a boot selected, even with
+// the ring full. That needs at least two generations: with one, the only slot left to write to
+// would be the very state the user was just offered.
 static_assert(AutoSaveGenerationCount >= 2);
 
 /// Whether `slot` addresses one of the autosave generations rather than a user slot
@@ -114,14 +116,22 @@ AutoSaveResumeStatus CheckAutoSaveState(u64 program_id, u64 movie_id,
  * `generations` (as returned by ListAutoSaveStates): a generation that does not exist yet, else
  * the one whose loss costs the least, i.e. the oldest.
  *
- * Because the oldest is never the newest (see the static_assert on AutoSaveGenerationCount), a
- * session can never overwrite the generation it just resumed from, and because the choice is
- * made once per session rather than once per save, the ring holds the last
+ * `avoid_slot` is the slot SelectAutoSaveState picked for this boot, and is never chosen while
+ * any other generation could be. Passing it is not an optimisation, it is the correctness
+ * condition: the oldest generation is *not* reliably a different one from the selected
+ * generation, because SelectAutoSaveState returns the newest generation this build can *load*,
+ * and that is the oldest one whenever everything newer is a BuildMismatch. Without this the
+ * session would overwrite the state the user was offered -- with periodic saving on, possibly
+ * while its "resume?" dialog is still on screen.
+ *
+ * Because the choice is made once per session rather than once per save, the ring holds the last
  * AutoSaveGenerationCount *sessions* rather than the last few minutes of one of them.
  */
-u32 PickAutoSaveWriteSlot(const std::vector<SaveStateInfo>& generations);
+u32 PickAutoSaveWriteSlot(const std::vector<SaveStateInfo>& generations,
+                          u32 avoid_slot = std::numeric_limits<u32>::max());
 
 /// PickAutoSaveWriteSlot on the files on disk
-u32 PickAutoSaveWriteSlot(u64 program_id, u64 movie_id);
+u32 PickAutoSaveWriteSlot(u64 program_id, u64 movie_id,
+                          u32 avoid_slot = std::numeric_limits<u32>::max());
 
 } // namespace Core

@@ -293,22 +293,72 @@ TEST_CASE("Core::PickAutoSaveWriteSlot", "[core][savestate]") {
         REQUIRE(Core::PickAutoSaveWriteSlot(generations) == Core::AutoSaveStateSlot + 1);
     }
 
-    SECTION("never picks the generation a boot would resume from, so the state that was offered "
-            "survives the session that declined it") {
+    SECTION("does not write over the selected generation when it is also the oldest, which "
+            "happens as soon as everything newer is from a build that cannot be loaded") {
+        // The oldest generation is only reliably a different one from the selected generation
+        // while every generation is loadable. SelectAutoSaveState returns the newest *loadable*
+        // one, so a full ring whose two newest entries are BuildMismatch selects the oldest --
+        // and picking "the oldest" to write to would then destroy the only state on the machine
+        // this build can read, the very one the user is looking at in the resume dialog.
+        const auto generations = Newest({AutoSave(base + 30, Status::BuildMismatch, 0),
+                                         AutoSave(base + 10, Status::OK, 1),
+                                         AutoSave(base + 20, Status::BuildMismatch, 2)});
+        Core::SaveStateInfo selected{};
+        REQUIRE(Core::SelectAutoSaveState(generations, base - 1, &selected) ==
+                Core::AutoSaveResumeStatus::Resumable);
+        REQUIRE(selected.slot == Core::AutoSaveStateSlot + 1);
+        // the oldest entry really is the selected one, which is what used to make this unsafe
+        REQUIRE(generations.back().slot == selected.slot);
+        REQUIRE(Core::PickAutoSaveWriteSlot(generations, selected.slot) != selected.slot);
+        // and it falls back to the next-oldest rather than to a free slot that does not exist
+        REQUIRE(Core::PickAutoSaveWriteSlot(generations, selected.slot) ==
+                Core::AutoSaveStateSlot + 2);
+    }
+
+    SECTION("same when the one loadable generation is a revision mismatch rather than OK") {
+        const auto generations = Newest({AutoSave(base + 30, Status::BuildMismatch, 0),
+                                         AutoSave(base + 10, Status::RevisionMismatch, 1),
+                                         AutoSave(base + 20, Status::BuildMismatch, 2)});
+        Core::SaveStateInfo selected{};
+        REQUIRE(Core::SelectAutoSaveState(generations, base - 1, &selected) ==
+                Core::AutoSaveResumeStatus::Resumable);
+        REQUIRE(Core::PickAutoSaveWriteSlot(generations, selected.slot) != selected.slot);
+    }
+
+    SECTION("never picks the generation a boot would resume from, over every shape of ring and "
+            "every mix of loadable and unloadable generations") {
         // The field failure this whole ring exists for: a good state, a session that boots, is
         // killed before it autosaves, and boots again. Whatever the session writes, the state it
-        // was offered is still on disk afterwards.
-        const auto full =
-            Newest({AutoSave(base + 30, Status::OK, 0), AutoSave(base + 10, Status::OK, 1),
-                    AutoSave(base + 20, Status::OK, 2)});
-        for (const auto& generations :
-             {std::vector<Core::SaveStateInfo>{}, Newest({AutoSave(base, Status::OK, 0)}), full}) {
-            Core::SaveStateInfo resumed{};
-            const auto status = Core::SelectAutoSaveState(generations, base - 1, &resumed);
+        // was offered is still on disk afterwards. Iterating the statuses is the point -- the
+        // first version of this test used Status::OK throughout, so it never reached the branch
+        // where the selected generation is also the oldest, and passed while that was broken.
+        constexpr std::array statuses = {Status::OK, Status::RevisionMismatch,
+                                         Status::BuildMismatch};
+        std::vector<std::vector<Core::SaveStateInfo>> rings;
+        rings.emplace_back();
+        rings.push_back(Newest({AutoSave(base, Status::OK, 0)}));
+        for (const auto s0 : statuses) {
+            for (const auto s1 : statuses) {
+                for (const auto s2 : statuses) {
+                    rings.push_back(Newest({AutoSave(base + 30, s0, 0), AutoSave(base + 10, s1, 1),
+                                            AutoSave(base + 20, s2, 2)}));
+                    // and a ring with a hole, where a free slot is available instead
+                    rings.push_back(
+                        Newest({AutoSave(base + 30, s0, 0), AutoSave(base + 10, s1, 2)}));
+                }
+            }
+        }
+        for (const auto& generations : rings) {
+            Core::SaveStateInfo selected{};
+            const auto status = Core::SelectAutoSaveState(generations, base - 1, &selected);
             if (status == Core::AutoSaveResumeStatus::None) {
                 continue;
             }
-            REQUIRE(Core::PickAutoSaveWriteSlot(generations) != resumed.slot);
+            const u32 write = Core::PickAutoSaveWriteSlot(generations, selected.slot);
+            INFO("ring of " << generations.size() << ", selected slot " << selected.slot
+                            << ", write slot " << write);
+            REQUIRE(write != selected.slot);
+            REQUIRE(Core::IsAutoSaveSlot(write));
         }
     }
 }
