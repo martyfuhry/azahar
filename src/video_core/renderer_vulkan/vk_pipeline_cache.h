@@ -104,13 +104,34 @@ public:
     /**
      * Writes the driver pipeline cache for the current title to disk. Cheap when nothing has
      * been compiled since the last write (one size query, no I/O). Safe to call while the
-     * pipeline workers are still compiling: the driver serializes access to a VkPipelineCache
-     * that was not created externally synchronized.
+     * pipeline workers are still compiling: vkGetPipelineCacheData carries no external
+     * synchronization requirement (vk.xml marks no parameter of it, or of
+     * vkCreateGraphicsPipelines, externsync), so the driver must serialize a read against
+     * concurrent creates itself. Only *destroying* the cache needs the workers stopped, which
+     * is what WaitForWorkers() below is for.
      */
     void SaveDriverPipelineDiskCache();
 
 private:
     friend ShaderDiskCache;
+
+    /**
+     * Blocks until no shader or pipeline worker is running. Every Vulkan object a worker can be
+     * inside a driver call on -- the VkPipelineCache passed to vkCreateGraphicsPipelines, and the
+     * VkShaderModules owned by the ShaderDiskCaches -- is destroyed by vkDestroy* entry points
+     * the spec marks externally synchronized, so nothing may free them while a worker still
+     * holds them. Call this before replacing driver_pipeline_cache or before erasing anything
+     * from disk_caches.
+     */
+    void WaitForWorkers();
+
+    /**
+     * Makes it safe to destroy the ShaderDiskCaches: drains the workers, then submits and waits
+     * out the recorded command stream, because the Scheduler's queued lambdas hold raw
+     * GraphicsPipeline pointers and the GPU may still be executing with pipelines those objects
+     * own. Also drops this class's own raw pointers into them.
+     */
+    void QuiesceForDiskCacheTeardown();
 
     /// Loads the driver pipeline cache
     void LoadDriverPipelineDiskCache(const std::atomic_bool& stop_loading = std::atomic_bool{false},

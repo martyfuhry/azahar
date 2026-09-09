@@ -73,7 +73,8 @@ Shader::~Shader() {
 }
 
 GraphicsPipeline::GraphicsPipeline(const Instance& instance_, RenderManager& renderpass_cache_,
-                                   const PipelineInfo& info_, vk::PipelineCache pipeline_cache_,
+                                   const PipelineInfo& info_,
+                                   const vk::UniquePipelineCache& pipeline_cache_,
                                    vk::PipelineLayout layout_, std::array<Shader*, 3> stages_,
                                    Common::ThreadWorker* worker_)
     : instance{instance_}, renderpass_cache{renderpass_cache_}, worker{worker_},
@@ -282,7 +283,8 @@ bool GraphicsPipeline::Build(bool fail_on_compile_required) {
         pipeline_info.flags |= vk::PipelineCreateFlagBits::eFailOnPipelineCompileRequiredEXT;
     }
 
-    auto result = instance.GetDevice().createGraphicsPipelineUnique(pipeline_cache, pipeline_info);
+    auto result =
+        instance.GetDevice().createGraphicsPipelineUnique(*pipeline_cache, pipeline_info);
     if (result.result == vk::Result::eSuccess) {
         pipeline = std::move(result.value);
     } else if (result.result == vk::Result::eErrorPipelineCompileRequiredEXT) {

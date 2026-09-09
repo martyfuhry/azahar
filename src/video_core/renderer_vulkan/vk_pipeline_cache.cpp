@@ -145,9 +145,23 @@ void PipelineCache::BuildLayout() {
 }
 
 PipelineCache::~PipelineCache() {
-    pipeline_workers.WaitForRequests();
-    shader_workers.WaitForRequests();
+    WaitForWorkers();
     SaveDriverPipelineDiskCache();
+}
+
+void PipelineCache::WaitForWorkers() {
+    // Shaders first: a pipeline worker parks in Shader::WaitDone() until the shader worker that
+    // owns its modules is finished, so draining the pipeline pool first would only wait longer.
+    shader_workers.WaitForRequests();
+    pipeline_workers.WaitForRequests();
+}
+
+void PipelineCache::QuiesceForDiskCacheTeardown() {
+    WaitForWorkers();
+    scheduler.Finish();
+    current_pipeline = nullptr;
+    current_shaders.fill(nullptr);
+    shader_hashes.fill(0);
 }
 
 void PipelineCache::LoadCache(const std::atomic_bool& stop_loading,
@@ -189,6 +203,12 @@ void PipelineCache::SwitchCache(u64 title_id, const std::atomic_bool& stop_loadi
 
 void PipelineCache::LoadDriverPipelineDiskCache(
     const std::atomic_bool& stop_loading, const VideoCore::DiskResourceLoadCallback& callback) {
+    // Assigning to driver_pipeline_cache below destroys whatever it holds. A pipeline worker
+    // that is inside vkCreateGraphicsPipelines on that handle would then be operating on a freed
+    // driver object; on Adreno the next lock of its internal mutex aborts the process with
+    // "FORTIFY: pthread_mutex_lock called on a destroyed mutex".
+    WaitForWorkers();
+
     vk::PipelineCacheCreateInfo cache_info{};
 
     if (callback) {
@@ -338,6 +358,13 @@ void PipelineCache::SaveDriverPipelineDiskCache() {
 void PipelineCache::LoadDiskCache(const std::atomic_bool& stop_loading,
                                   const VideoCore::DiskResourceLoadCallback& callback) {
 
+    // Dropping the ShaderDiskCaches destroys the GraphicsPipelines the pipeline workers hold
+    // pointers to, and the Shaders whose vkDestroyShaderModule would race the
+    // vkCreateGraphicsPipelines call those pipelines are passing the module to.
+    if (!disk_caches.empty()) {
+        QuiesceForDiskCacheTeardown();
+    }
+
     disk_caches.clear();
     curr_disk_cache =
         disk_caches.emplace_back(std::make_shared<ShaderDiskCache>(*this, GetProgramID()));
@@ -354,6 +381,10 @@ void PipelineCache::SwitchDiskCache(u64 title_id, const std::atomic_bool& stop_l
     if (curr_disk_cache && curr_disk_cache->GetProgramID() == title_id) {
         return;
     }
+
+    // Past this point curr_disk_cache changes and the applet/title cleanup below erases
+    // ShaderDiskCaches, with the same lifetime hazard as LoadDiskCache's clear()
+    QuiesceForDiskCacheTeardown();
 
     // Search for an existing manager
     size_t new_pos = 0;

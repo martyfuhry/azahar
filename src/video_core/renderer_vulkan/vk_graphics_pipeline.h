@@ -312,8 +312,17 @@ struct Shader : public Common::AsyncHandle {
 
 class GraphicsPipeline : public Common::AsyncHandle {
 public:
+    /**
+     * `pipeline_cache` is taken by reference to the owner's handle rather than by value: the
+     * driver pipeline cache is replaced whenever the disk cache is (re)loaded or the title is
+     * switched, and a pipeline built after such a swap must use the cache that exists then, not
+     * the one that was current when it was created. Destroying a VkPipelineCache while
+     * vkCreateGraphicsPipelines is using it is undefined behaviour (vkDestroyPipelineCache is
+     * externally synchronized), and on Adreno it aborts inside the driver.
+     */
     explicit GraphicsPipeline(const Instance& instance, RenderManager& renderpass_cache,
-                              const PipelineInfo& info, vk::PipelineCache pipeline_cache,
+                              const PipelineInfo& info,
+                              const vk::UniquePipelineCache& pipeline_cache,
                               vk::PipelineLayout layout, std::array<Shader*, 3> stages,
                               Common::ThreadWorker* worker);
     ~GraphicsPipeline();
@@ -333,7 +342,7 @@ private:
 
     vk::UniquePipeline pipeline;
     vk::PipelineLayout pipeline_layout;
-    vk::PipelineCache pipeline_cache;
+    const vk::UniquePipelineCache& pipeline_cache;
 
     PipelineInfo info;
     std::array<Shader*, 3> stages;
