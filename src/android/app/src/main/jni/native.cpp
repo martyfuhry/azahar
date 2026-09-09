@@ -447,7 +447,17 @@ static std::chrono::steady_clock::duration PeriodicAutoSaveInterval() {
     if (!AutoSaveEnabled()) {
         return {};
     }
-    return std::chrono::minutes(static_cast<u32>(Settings::values.autosave_interval.GetValue()));
+    // The picker can only produce the values in Settings::AutoSaveInterval, but jni/config.cpp
+    // reads this key straight out of the ini and Setting<AutoSaveInterval> carries no range, so a
+    // corrupted or hand-edited config can hand over anything a u32 holds. Converting that many
+    // minutes to the nanosecond steady_clock::duration overflows well before u32 does, and a
+    // wrapped negative interval puts the deadline permanently in the past, which would autosave
+    // on every single loop iteration and wedge the emulator. A day is far beyond anything the UI
+    // offers and still converts exactly.
+    constexpr u32 max_minutes = 24 * 60;
+    const u32 minutes =
+        std::min(static_cast<u32>(Settings::values.autosave_interval.GetValue()), max_minutes);
+    return std::chrono::minutes(minutes);
 }
 
 /**

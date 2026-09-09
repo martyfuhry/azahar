@@ -56,14 +56,29 @@ enum class AutoSaveMode : u32 {
  * a state stalls the emulation thread for its whole duration, so the interval is the knob that
  * trades a visible hitch against how much play a kill can take with it.
  *
- * The default is five minutes because that stall is not small. Measured with azahar-bench on the
- * development host, median of three runs each: Animal Crossing New Leaf 346 ms, Majora's Mask 3D
- * 362 ms, Hyrule Warriors Legends 292 ms. That is a freeze of the picture, not a dropped frame,
- * and a phone core is slower than that host. Five minutes keeps it near a third of a percent of
- * wall time; one minute would be nearly two percent and one visible freeze every minute, which
- * trades a lost-save complaint for a stutter complaint. The ring and the stale offer are what
- * actually stop a save being lost, so this interval does not have to be aggressive to be worth
- * having. The real fix for the stall is to get compression and the file write off this thread,
+ * The default is five minutes, from measurement rather than feel.
+ *
+ * Host, azahar-bench --save-after, median of three runs: Animal Crossing New Leaf 346 ms,
+ * Majora's Mask 3D 362 ms, Hyrule Warriors Legends 292 ms. Device (AYN Thor, Pokemon X, 7.3 MB
+ * state), from Begin-save to Save-completed deltas in a logcat capture: 281, 374, 375, 393 ms
+ * while the screen was on, and 1756 and 1716 ms for the two saves during which the screen went
+ * off mid-write. So a phone core is *not* systematically slower than the host here -- the awake
+ * figures sit on top of the host ones -- and the second-and-a-half outliers belong to the suspend
+ * path, where SCREEN_OFF arrives about half a second into the save and the rest is spent with the
+ * device powering memory down underneath it (PASR segment offlining is visible in the same
+ * window). A periodic save runs with the screen on and should cost what the awake saves cost.
+ *
+ * That still makes it a ~0.4 s freeze of the picture, not a dropped frame. Five minutes puts it
+ * near a tenth of a percent of wall time; one minute would be five times that and a visible freeze
+ * every minute, which answers a lost-save complaint with a stutter complaint. The generation ring
+ * and the stale offer are what actually stop a save being lost, so this interval is a convenience
+ * against a hard kill mid-play and does not need to be aggressive to earn its place. Three
+ * minutes is defensible and is one tap away in the picker.
+ *
+ * Not yet measured: a save taken during active play. Every device figure above is a pause-time
+ * save, because no build with this setting has run on a device yet. The core logs "Save completed
+ * in N ms" so that gap can be closed from logcat rather than argued about. The real fix for the
+ * stall, whatever it turns out to be, is to get compression and the file write off this thread,
  * which is a larger change than this setting.
  */
 enum class AutoSaveInterval : u32 {
