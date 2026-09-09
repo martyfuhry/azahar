@@ -234,12 +234,17 @@ static void NotifyAutoSaveEvent(AutoSaveEvent event, const Core::SaveStateInfo& 
     JNIEnv* env = IDCache::GetEnvForThread();
     env->CallStaticVoidMethod(IDCache::GetNativeLibraryClass(), IDCache::GetOnAutoSaveState(),
                               static_cast<jint>(event), static_cast<jlong>(info.time * 1000),
+                              static_cast<jint>(info.slot),
                               env->NewStringUTF(info.build_name.c_str()));
 }
 
 static bool AutoSaveEnabled() {
     return Settings::values.autosave_mode.GetValue() != Settings::AutoSaveMode::Off;
 }
+
+// The autosave generation this session writes to, chosen once per boot so that the ring holds one
+// state per past session rather than a few minutes of the current one. Emulation thread only.
+u32 session_autosave_slot = Core::AutoSaveStateSlot;
 
 /**
  * Called on the emulation thread right after a title booted, before the first RunLoop().
@@ -264,6 +269,11 @@ static bool OfferAutoSaveOnBoot(Core::System& system, u64 program_id) {
                         .count();
     Core::RecordNormalBoot(program_id, now);
 
+    // Chosen before the first autosave of the session and kept for its whole lifetime. It is
+    // never the generation picked above, so answering "start fresh" to the prompt below does not
+    // put the offered state under this session's writes.
+    session_autosave_slot = Core::PickAutoSaveWriteSlot(program_id, movie_id);
+
     if (!AutoSaveEnabled()) {
         return false;
     }
@@ -281,8 +291,9 @@ static bool OfferAutoSaveOnBoot(Core::System& system, u64 program_id) {
         break;
     case Core::AutoSaveResumeStatus::Resumable:
         if (Settings::values.autosave_mode.GetValue() == Settings::AutoSaveMode::Always) {
-            LOG_INFO(Frontend, "Resuming from autosave written at {}", autosave.time);
-            system.SendSignal(Core::System::Signal::Load, Core::AutoSaveStateSlot);
+            LOG_INFO(Frontend, "Resuming from autosave written at {} (slot {})", autosave.time,
+                     autosave.slot);
+            system.SendSignal(Core::System::Signal::Load, autosave.slot);
             NotifyAutoSaveEvent(AutoSaveEvent::Resuming, autosave);
             return true;
         }
@@ -407,12 +418,15 @@ static void FlushAutoSave(Core::System& system) {
     if (!pump()) {
         return;
     }
-    if (!system.SendSignal(Core::System::Signal::Save, Core::AutoSaveStateSlot)) {
+    if (!system.SendSignal(Core::System::Signal::Save, session_autosave_slot)) {
         LOG_ERROR(Frontend, "Autosave: another signal is still pending");
         return;
     }
     if (pump()) {
-        LOG_INFO(Frontend, "Autosave written");
+        // The core logs the cost of the write itself, which is the whole of the stall; the wall
+        // time spent in here also covers slices run while the kernel finished its pending async
+        // operations, and those are ordinary frames rather than a stall.
+        LOG_INFO(Frontend, "Autosave written to slot {}", session_autosave_slot);
     }
 }
 

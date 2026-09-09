@@ -206,9 +206,10 @@ object NativeLibrary {
     external fun trimMemory()
 
     /**
-     * Asks the emulation thread to write the automatic "save on exit" state
-     * ([AUTOSAVE_SLOT]) at its next opportunity, waking it if it is paused. Cheap to call
-     * from lifecycle callbacks; pair with [waitForAutoSave] before the process may die.
+     * Asks the emulation thread to write the automatic "save on exit" state at its next
+     * opportunity, waking it if it is paused. Cheap to call from lifecycle callbacks; pair with
+     * [waitForAutoSave] before the process may die. Which autosave generation it lands in is the
+     * emulation thread's business (Core::PickAutoSaveWriteSlot), fixed for the session.
      * @return false if nothing will be saved (emulation not running or autosave disabled)
      */
     external fun requestAutoSave(): Boolean
@@ -683,7 +684,11 @@ object NativeLibrary {
     const val SAVESTATE_SLOT_COUNT = 11
     const val QUICKSAVE_SLOT = 0
 
-    /** Mirrors Core::AutoSaveStateSlot; never shown in the slot pickers */
+    /**
+     * Mirrors Core::AutoSaveStateSlot, the first of the autosave generations; the rest follow it.
+     * None of them are ever shown in the slot pickers. UI code should use the slot handed to
+     * [onAutoSaveState] rather than this constant, which only names where the range starts.
+     */
     const val AUTOSAVE_SLOT = 1000
 
     /** How long the UI thread waits for an autosave before letting the lifecycle proceed */
@@ -700,10 +705,13 @@ object NativeLibrary {
      * Called from the emulation thread right after boot when an autosave from the previous
      * session was found. Only posts UI; a load is requested through [loadState] like any
      * user-picked slot, so the emulation thread performs it and reports errors as usual.
+     *
+     * [slot] names the autosave generation the state was found in, so the load targets the same
+     * file the message describes rather than whichever generation happens to be newest by then.
      */
     @Keep
     @JvmStatic
-    fun onAutoSaveState(event: Int, timeMillis: Long, buildName: String) {
+    fun onAutoSaveState(event: Int, timeMillis: Long, slot: Int, buildName: String) {
         val emulationActivity = sEmulationActivity.get()
         if (emulationActivity == null) {
             Log.warning("[NativeLibrary] EmulationActivity not present, ignoring autosave event")
@@ -719,7 +727,7 @@ object NativeLibrary {
                             emulationActivity.getString(R.string.autosave_resume_message, time)
                         )
                         .setPositiveButton(R.string.autosave_resume_load) { _, _ ->
-                            loadState(AUTOSAVE_SLOT)
+                            loadState(slot)
                         }
                         .setNegativeButton(R.string.autosave_resume_skip, null)
                         .show()
