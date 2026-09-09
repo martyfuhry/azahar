@@ -97,8 +97,9 @@ The fourth is the instructive one, because it happened *during the correction of
 partial read of the device (two crashes) produced a new theory that fitted beautifully, and a
 fuller read the same day (eight crashes, three signals) destroyed it. The lesson is not only
 "read the device" but **read all of it, and check what the evidence would look like if the
-theory were false.** One `getprop` on the fix's file extension — Kotlin, therefore
-`reason=4`, therefore not these crashes — would have killed #1624 in a minute.
+theory were false.** #1624 could have been killed in a minute by asking what its fix actually
+touches: a `.kt` file, so an exception, so `reason=4`, so not these crashes. Nobody asked,
+because the theory fitted.
 
 The cheap countermeasure is still the right one: **read the device before writing the
 explanation.** `dumpsys activity exit-info <pkg>`, `dumpsys dropbox`, `dumpsys usagestats` and
