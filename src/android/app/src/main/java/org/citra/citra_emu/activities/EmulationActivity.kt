@@ -293,9 +293,20 @@ class EmulationActivity : AppCompatActivity() {
     }
 
     /**
-     * Whether [newIntent] would boot the very title this activity is already running. Cheap
-     * checks first (same URI or same parcelled game); only when those differ is the incoming
-     * file opened to read its title id and compared with the core's.
+     * Whether [newIntent] would boot the very title this activity is already running.
+     *
+     * Front-ends do not describe a game the same way. Our own game list passes a parcelled
+     * [Game]; a launcher passes a URI, and often nothing else this activity can read — Argosy
+     * sends a FileProvider `content://` URI as the intent data plus the ROM's absolute path in
+     * the `SelectedGame` extra, and no game extra at all. So the identity is taken from the
+     * cheapest evidence first (the parcelled game, then the launch request itself), and only
+     * when that is inconclusive is the incoming file opened to read its title id.
+     *
+     * What must never be compared is the path the game ends up running under:
+     * [org.citra.citra_emu.fragments.EmulationFragment] opens the URI into an `fd://<n>` path,
+     * and that number is a fresh descriptor on every launch. When nothing can establish the
+     * identity this returns false and the caller reloads, which is the safe direction: silently
+     * ignoring a request to launch a *different* game is far worse than a missed resume.
      */
     private fun targetsCurrentGame(newIntent: Intent): Boolean {
         val current = intent ?: return false
@@ -309,9 +320,16 @@ class EmulationActivity : AppCompatActivity() {
             return newGame.path == currentGame.path ||
                 (newGame.titleId != 0L && newGame.titleId == currentGame.titleId)
         }
-        val newUri = newIntent.data ?: newIntent.getStringExtra("SelectedGame")?.toUri()
-        val currentUri = current.data ?: current.getStringExtra("SelectedGame")?.toUri()
+        val newUri = newIntent.data ?: newIntent.getStringExtra(EXTRA_SELECTED_GAME)?.toUri()
+        val currentUri = current.data ?: current.getStringExtra(EXTRA_SELECTED_GAME)?.toUri()
         if (newUri != null && newUri == currentUri) {
+            return true
+        }
+        // A launcher that hands the ROM over twice — a per-launch provider URI as the data and
+        // the absolute path as an extra — is identified by the path, the stable half of the pair
+        val newPath = newIntent.getStringExtra(EXTRA_SELECTED_GAME)
+        val currentPath = current.getStringExtra(EXTRA_SELECTED_GAME) ?: currentGame?.path
+        if (newPath != null && newPath == currentPath) {
             return true
         }
         if (!NativeLibrary.isRunning()) {
@@ -321,15 +339,57 @@ class EmulationActivity : AppCompatActivity() {
         if (runningTitleId == 0L) {
             return false
         }
-        val newTitleId = newGame?.titleId?.takeIf { it != 0L } ?: newUri?.let { uri ->
-            val path = when {
-                BuildUtil.isGooglePlayBuild -> uri.toString()
-                uri.scheme == "file" -> uri.path
-                else -> "!" + NativeLibrary.getNativePath(uri)
-            }
-            path?.let { NativeLibrary.getTitleId(it) }
+        val newTitleId = incomingTitleId(newGame, newIntent)
+        if (newTitleId == 0L) {
+            Log.info(
+                "[EmulationActivity] Could not read a title id for the incoming launch intent; " +
+                    "reloading rather than assuming it is the running title"
+            )
+            return false
         }
         return newTitleId == runningTitleId
+    }
+
+    /**
+     * The title id [newIntent] would boot, or 0 when it cannot be established. Everything here
+     * has to open the file, so it is only reached once the cheap comparisons in
+     * [targetsCurrentGame] have come up empty.
+     */
+    private fun incomingTitleId(newGame: Game?, newIntent: Intent): Long {
+        newGame?.titleId?.let { if (it != 0L) return it }
+        // An absolute path is the one thing the core can open by name with no help from us
+        newIntent.getStringExtra(EXTRA_SELECTED_GAME)?.let { path ->
+            if (path.startsWith("/")) {
+                NativeLibrary.getTitleId(path).let { if (it != 0L) return it }
+            }
+        }
+        val uri = newIntent.data ?: return 0L
+        val path = when {
+            BuildUtil.isGooglePlayBuild -> uri.toString()
+            uri.scheme == "file" -> uri.path
+            else -> "!" + NativeLibrary.getNativePath(uri)
+        }
+        if (!path.isNullOrEmpty() && path != "!") {
+            NativeLibrary.getTitleId(path).let { if (it != 0L) return it }
+        }
+        if (BuildUtil.isGooglePlayBuild) {
+            return 0L
+        }
+        // A provider URI has no path the core can name — getNativePath only knows the document
+        // providers. Reading the id through a descriptor is the same route EmulationFragment
+        // takes to boot it, and the core dups whatever descriptor it is handed, so this one is
+        // closed again as soon as the id has been read.
+        return try {
+            contentResolver.openFileDescriptor(uri, "r")?.use {
+                NativeLibrary.getTitleId("fd://${it.fd}")
+            } ?: 0L
+        } catch (e: Exception) {
+            Log.warning(
+                "[EmulationActivity] Could not open the incoming game to read its title id: " +
+                    "${e.message}"
+            )
+            0L
+        }
     }
 
     // On some devices, the system bars will not disappear on first boot or after some
@@ -902,6 +962,12 @@ class EmulationActivity : AppCompatActivity() {
 
     companion object {
         private var instance: EmulationActivity? = null
+
+        /**
+         * The extra a front-end puts the ROM's path in. Ours does not use it — it parcels a
+         * [Game] instead — but Argosy and the other launchers do, alongside the data URI.
+         */
+        const val EXTRA_SELECTED_GAME = "SelectedGame"
 
         fun isRunning(): Boolean = instance?.isEmulationRunning ?: false
     }
