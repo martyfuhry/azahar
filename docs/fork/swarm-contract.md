@@ -45,3 +45,17 @@ Then, from `docs/fork/improvement-plan.md` §3, what Tier 2 and Tier 3 still hav
 ## Fold5 version-code rule (added 2026-09-08 night)
 
 Every APK that will be installed on the Fold5 is built with `-PversionCodeOverride=40000000`, so any build installs over any other (the default version code is a build timestamp and Android refuses to downgrade a release build). Thor release builds keep the default timestamp code. Lock files live ONLY under the session scratchpad path named above; never create a `scratchpad/` directory inside the repo.
+
+## Device gotchas learned the hard way (2026-09-09)
+
+- **Hold the lock before ANY adb action against the phone**, including a bare `screencap` or
+  `dumpsys`. An agent that prepared scripts while merely queued photographed a different
+  agent's app and nearly reported those pixels as its own result.
+- **`topResumedActivity` is per display.** On the Fold5 it can correctly name your activity
+  while another app owns display 0's pixels. Check `dumpsys window | grep mCurrentFocus`
+  before and after any screen capture, and discard the frame if it changed.
+- **The Fold5 cover screen is 904x2316 and its bottom gesture strip starts around y=2185.**
+  Taps below that are swallowed as swipes and open Recents. Scroll a target above the strip
+  before tapping it; fixed bottom buttons at y~2127 are safe.
+- **scrcpy contaminates measurements** (it adds a virtual display and an encoder). Record
+  whether it was running; never compare numbers taken with it against numbers taken without.
