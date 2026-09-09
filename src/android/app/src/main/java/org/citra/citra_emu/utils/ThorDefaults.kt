@@ -36,12 +36,28 @@ object ThorDefaults {
 
     /**
      * Hardware this profile is meant for, matched case-insensitively against
-     * [Build.MANUFACTURER] plus either [Build.MODEL] or [Build.DEVICE]. Extend the list rather
-     * than loosening the match: the profile turns the second screen on and quadruples the
-     * render resolution, which is wrong for a phone.
+     * [Build.MANUFACTURER] **and** [Build.MODEL]. Both have to match; extend the list rather
+     * than loosening the match, because the profile turns the second screen on and quadruples
+     * the render resolution, which is wrong for a phone.
+     *
+     * The strings come from a read-only `getprop` snapshot of Marty's own Thor, recorded in
+     * `docs/fork/baselines/2026-09-09-thor-device-snapshot.md`:
+     * `ro.product.manufacturer=AYN`, `ro.product.model=AYN Thor`, Android 13 / SDK 33,
+     * `ro.soc.model=QCS8550`. Two properties look like they would work and do not:
+     *
+     *  - **`Build.BRAND` is `qti`, not `AYN`.** The device ships Qualcomm's reference brand,
+     *    so any match on `ro.product.brand` fails on the real hardware.
+     *  - **`Build.DEVICE` (and `ro.product.name`) is `kalama`**, which is Qualcomm's platform
+     *    name for the SM8550 and is shared with every other reference-derived SM8550 product.
+     *    Matching it alone would enable a two-panel, 4x profile on unrelated phones, so it is
+     *    deliberately not consulted here.
+     *
+     * This is only the fallback path: a `thor` flavour build is a Thor by construction (see
+     * [BuildUtil.isThorBuild]). The allowlist exists so a vanilla build running on the real
+     * hardware still gets sane defaults.
      */
     private val knownDevices = listOf(
-        KnownDevice(manufacturer = "ayn", model = "thor")
+        KnownDevice(manufacturer = "ayn", model = "ayn thor")
     )
 
     private data class KnownDevice(val manufacturer: String, val model: String)
@@ -112,10 +128,11 @@ object ThorDefaults {
         get() {
             val manufacturer = Build.MANUFACTURER.lowercase()
             val model = Build.MODEL.lowercase()
-            val device = Build.DEVICE.lowercase()
+            // Manufacturer AND model, both. `contains` on the model rather than an exact
+            // compare so a later "AYN Thor <something>" still matches; `Build.DEVICE` is
+            // intentionally absent, see [knownDevices].
             return knownDevices.any {
-                manufacturer.contains(it.manufacturer) &&
-                    (model.contains(it.model) || device.contains(it.model))
+                manufacturer.contains(it.manufacturer) && model.contains(it.model)
             }
         }
 
