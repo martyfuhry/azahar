@@ -228,6 +228,7 @@ enum class AutoSaveEvent : jint {
     Offered = 0,       ///< A fresh autosave exists; the user decides whether to load it
     Resuming = 1,      ///< A fresh autosave is being loaded because the mode is "always"
     BuildMismatch = 2, ///< A fresh autosave exists but this build cannot load it
+    OfferedStale = 3,  ///< An autosave from before the previous session; only ever offered
 };
 
 static void NotifyAutoSaveEvent(AutoSaveEvent event, const Core::SaveStateInfo& info) {
@@ -281,8 +282,14 @@ static bool OfferAutoSaveOnBoot(Core::System& system, u64 program_id) {
     case Core::AutoSaveResumeStatus::None:
         break;
     case Core::AutoSaveResumeStatus::Stale:
-        LOG_INFO(Frontend, "Ignoring autosave from {} that predates the previous boot",
+        // Not loadable without asking: the previous session left no autosave, so the player may
+        // have made in-game saves that this state would rewind past. That is a reason to make
+        // them choose, not a reason to decide for them -- a session that was killed before its
+        // first autosave used to leave this state as the only copy of the progress, and the
+        // silent skip here was how it got overwritten and lost.
+        LOG_INFO(Frontend, "Offering autosave from {} that predates the previous boot",
                  autosave.time);
+        NotifyAutoSaveEvent(AutoSaveEvent::OfferedStale, autosave);
         break;
     case Core::AutoSaveResumeStatus::BuildMismatch:
         LOG_WARNING(Frontend, "Skipping autosave written by incompatible build {} {}",

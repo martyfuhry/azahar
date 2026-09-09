@@ -699,6 +699,7 @@ object NativeLibrary {
         const val OFFERED = 0
         const val RESUMING = 1
         const val BUILD_MISMATCH = 2
+        const val OFFERED_STALE = 3
     }
 
     /**
@@ -725,6 +726,27 @@ object NativeLibrary {
                         .setTitle(R.string.autosave_resume_title)
                         .setMessage(
                             emulationActivity.getString(R.string.autosave_resume_message, time)
+                        )
+                        .setPositiveButton(R.string.autosave_resume_load) { _, _ ->
+                            loadState(slot)
+                        }
+                        .setNegativeButton(R.string.autosave_resume_skip, null)
+                        .show()
+                }
+
+                // Deliberately a dialog and never an automatic load, whatever the autosave mode
+                // says: the previous session left no autosave of its own, so this state may be
+                // behind in-game saves made since, and only the player knows. It must still be
+                // offered -- discarding it silently is how a state ends up being the only copy of
+                // someone's progress and then getting overwritten.
+                AutoSaveEvent.OFFERED_STALE -> {
+                    MaterialAlertDialogBuilder(emulationActivity)
+                        .setTitle(R.string.autosave_resume_stale_title)
+                        .setMessage(
+                            emulationActivity.getString(
+                                R.string.autosave_resume_stale_message,
+                                time
+                            )
                         )
                         .setPositiveButton(R.string.autosave_resume_load) { _, _ ->
                             loadState(slot)

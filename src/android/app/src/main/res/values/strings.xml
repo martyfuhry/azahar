@@ -241,6 +241,8 @@
     <string name="autosave_resume_skip">Start fresh</string>
     <string name="autosave_resuming">Resuming from autosave (%1$s)</string>
     <string name="autosave_build_mismatch">Skipped autosave from a different Azahar version (%1$s)</string>
+    <string name="autosave_resume_stale_title">Older autosave found</string>
+    <string name="autosave_resume_stale_message">A state was saved automatically on %1$s, from before your last session. Anything you saved in the application since then would be undone by loading it. Load it anyway, or keep playing from the application\'s own save data?</string>
     <string name="console_id">Console ID</string>
     <string name="regenerate_console_id">Regenerate Console ID</string>
     <string name="regenerate_console_id_description">This will replace your current virtual 3DS console ID with a new one. Your current virtual 3DS console ID will not be recoverable. This might have unexpected effects inside applications. This might fail if you use an outdated config save. Continue?</string>
