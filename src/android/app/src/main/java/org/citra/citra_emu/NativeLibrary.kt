@@ -256,6 +256,14 @@ object NativeLibrary {
         fileRedirectDir: String?
     )
 
+    /**
+     * The default a shared boolean setting carries in `src/common/settings.h`, for the settings
+     * whose default is decided per platform. Kotlin asks rather than restating the value,
+     * because a restated default silently drifts: Android's `shaders_accurate_mul` disagreed
+     * with the shared default for years with nothing anywhere to say so.
+     */
+    external fun getDefaultBoolean(key: String): Boolean
+
     external fun areKeysAvailable(): Boolean
 
     external fun getHomeMenuPath(region: Int): String

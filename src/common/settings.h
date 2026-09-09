@@ -560,6 +560,23 @@ struct Values {
     SwitchableSetting<bool> use_hw_shader{true, Keys::use_hw_shader};
     SwitchableSetting<bool> use_disk_shader_cache{true, Keys::use_disk_shader_cache};
     SwitchableSetting<bool> use_skip_duplicate_frames{true, Keys::use_skip_duplicate_frames};
+    // Correctness, not performance: this emulates the PICA200's multiply semantics exactly
+    // instead of letting the host GPU take its fast path. It costs some shader throughput, which
+    // is why the value is worth stating deliberately rather than inheriting by accident.
+    //
+    // Android used to disagree with this default in silence. jni/config.cpp read the key with a
+    // hardcoded `false` fallback instead of going through ReadSetting, so a stock Android install
+    // ran with accurate multiplication off while desktop ran with it on, from the same tree, with
+    // nothing in the UI, the config file, the log or the documentation to say the platforms
+    // differed. On an Adreno 740 under Vulkan that renders Pokemon X's Froakie almost entirely
+    // white; turning this on and changing nothing else renders it correctly. The fallback is gone
+    // and Android now reads this like every other setting.
+    //
+    // If accurate multiplication ever proves too expensive on a mobile GPU, this is the one line
+    // to make conditional -- see async_shader_compilation and use_vsync above and below for the
+    // #ifdef ANDROID idiom to follow. It is deliberately not conditional today, because the value
+    // is the same on both platforms and an #ifdef whose arms agree hides that fact rather than
+    // documenting it.
     SwitchableSetting<bool> shaders_accurate_mul{true, Keys::shaders_accurate_mul};
 #ifdef ANDROID // TODO: Fuck this -OS
     SwitchableSetting<bool> use_vsync{false, Keys::use_vsync};

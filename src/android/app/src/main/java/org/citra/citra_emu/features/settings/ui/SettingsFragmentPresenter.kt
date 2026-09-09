@@ -59,6 +59,7 @@ import org.citra.citra_emu.utils.GraphicsPreset
 import org.citra.citra_emu.utils.GraphicsPresets
 import org.citra.citra_emu.utils.GraphicsUtil
 import org.citra.citra_emu.utils.Log
+import org.citra.citra_emu.utils.SettingsRepair
 import org.citra.citra_emu.utils.SystemSaveGame
 import org.citra.citra_emu.utils.ThemeUtil
 import org.citra.citra_emu.utils.ThorDefaults
@@ -362,6 +363,10 @@ class SettingsFragmentPresenter(private val fragmentView: SettingsFragmentView) 
             .setMessage(R.string.thor_defaults_confirmation)
             .setPositiveButton(android.R.string.ok) { _, _ ->
                 val changed = ThorDefaults.apply(settings, force = true)
+                ThorDefaults.markApplied()
+                // Everything in the file is ours again, including keys the repair pass had
+                // previously given up, because this is an explicit request for exactly that.
+                SettingsRepair.onFullProfileApplied()
                 settingsActivity.showToastMessage(
                     settingsActivity.getString(R.string.thor_defaults_applied, changed),
                     false
@@ -389,6 +394,28 @@ class SettingsFragmentPresenter(private val fragmentView: SettingsFragmentView) 
                     )
                 )
             }
+            add(HeaderSetting(R.string.settings_repair_header))
+            // Backed by the sidecar next to config.ini rather than by a preference, so that it
+            // has the same lifetime as the configuration it is a decision about.
+            val keepSettingsSetting = object : AbstractBooleanSetting {
+                override var boolean: Boolean
+                    get() = SettingsRepair.isOptedOut
+                    set(value) {
+                        SettingsRepair.isOptedOut = value
+                    }
+                override val key = null
+                override val section = null
+                override val isRuntimeEditable = false
+                override val valueAsString get() = boolean.toString()
+                override val defaultValue = false
+            }
+            add(
+                SwitchSetting(
+                    keepSettingsSetting,
+                    R.string.settings_repair_opt_out,
+                    R.string.settings_repair_opt_out_description
+                )
+            )
             val usernameSetting = object : AbstractStringSetting {
                 override var string: String
                     get() = SystemSaveGame.getUsername()

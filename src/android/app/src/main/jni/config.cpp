@@ -139,14 +139,13 @@ void Config::ReadValues() {
 
     // Renderer
     Settings::values.use_gles = android_config->GetBoolean("Renderer", "use_gles", true);
-    Settings::values.shaders_accurate_mul =
-        android_config->GetBoolean("Renderer", "shaders_accurate_mul", false);
     ReadSetting("Renderer", Settings::values.graphics_api);
     ReadSetting("Renderer", Settings::values.async_presentation);
     ReadSetting("Renderer", Settings::values.async_shader_compilation);
     ReadSetting("Renderer", Settings::values.spirv_shader_gen);
     ReadSetting("Renderer", Settings::values.disable_spirv_optimizer);
     ReadSetting("Renderer", Settings::values.use_hw_shader);
+    ReadSetting("Renderer", Settings::values.shaders_accurate_mul);
     ReadSetting("Renderer", Settings::values.use_shader_jit);
     ReadSetting("Renderer", Settings::values.resolution_factor);
     ReadSetting("Renderer", Settings::values.use_disk_shader_cache);

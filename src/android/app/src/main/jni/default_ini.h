@@ -114,7 +114,7 @@ static const char* android_config_default_file_content = (BOOST_HANA_STRING(R"(
 )") DECLARE_KEY(use_hw_shader) BOOST_HANA_STRING(R"(
 
 # Whether to use accurate multiplication in hardware shaders
-# 0: Off (Default. Faster, but causes issues in some games) 1: On (Slower, but correct)
+# 0: Off (Faster, but renders some games incorrectly) 1 (default): On (Slower, but correct)
 )") DECLARE_KEY(shaders_accurate_mul) BOOST_HANA_STRING(R"(
 
 # Whether to use the Just-In-Time (JIT) compiler for shader emulation

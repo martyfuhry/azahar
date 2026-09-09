@@ -38,7 +38,9 @@ import androidx.work.OneTimeWorkRequest
 import androidx.work.OutOfQuotaPolicy
 import androidx.work.WorkManager
 import com.google.android.material.color.MaterialColors
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.navigation.NavigationBarView
+import com.google.android.material.snackbar.Snackbar
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.TimeSource
 import kotlinx.coroutines.launch
@@ -64,7 +66,10 @@ import org.citra.citra_emu.utils.FileBrowserHelper
 import org.citra.citra_emu.utils.InsetsHelper
 import org.citra.citra_emu.utils.PermissionsHandler
 import org.citra.citra_emu.utils.RefreshRateUtil
+import org.citra.citra_emu.utils.SettingsRepair
 import org.citra.citra_emu.utils.ThemeUtil
+import org.citra.citra_emu.utils.repair.RepairChange
+import org.citra.citra_emu.utils.repair.RepairTier
 import org.citra.citra_emu.viewmodel.GamesViewModel
 import org.citra.citra_emu.viewmodel.HomeViewModel
 
@@ -196,6 +201,57 @@ class MainActivity :
         }
 
         setInsets()
+        showSettingsRepairNotice()
+    }
+
+    /**
+     * Tells the player, once, what the settings repair pass changed while they were not looking.
+     *
+     * A repair that nobody is told about is only marginally better than the wrong value it
+     * replaced: the point of the pass is that a setting is never silently wrong, and a silent fix
+     * is still silent. It is a snackbar rather than a dialog because a pass that changed something
+     * is not an error and does not need acknowledging, and it says nothing at all when nothing
+     * changed, which is almost every launch.
+     */
+    private fun showSettingsRepairNotice() {
+        val changes = SettingsRepair.pendingNotice
+        if (changes.isEmpty()) {
+            return
+        }
+        SettingsRepair.dismissNotice()
+        Snackbar.make(
+            binding.root,
+            resources.getQuantityString(
+                R.plurals.settings_repair_notice,
+                changes.size,
+                changes.size
+            ),
+            Snackbar.LENGTH_LONG
+        )
+            .setAnchorView(binding.navigationView)
+            .setAction(R.string.settings_repair_details) { showSettingsRepairDetails(changes) }
+            .show()
+    }
+
+    private fun showSettingsRepairDetails(changes: List<RepairChange>) {
+        val body = changes.joinToString("\n\n") {
+            getString(R.string.settings_repair_change, it.key, it.from, it.to, it.why)
+        }
+        val hasForced = changes.any { it.tier == RepairTier.CORRECTNESS }
+        val message = if (hasForced) {
+            body + "\n\n" + getString(R.string.settings_repair_undo_tier1_note)
+        } else {
+            body
+        }
+        MaterialAlertDialogBuilder(this)
+            .setTitle(R.string.settings_repair_details_title)
+            .setMessage(message)
+            .setPositiveButton(android.R.string.ok, null)
+            .setNegativeButton(R.string.settings_repair_undo) { _, _ ->
+                SettingsRepair.undo(changes)
+                Toast.makeText(this, R.string.settings_repair_undone, Toast.LENGTH_SHORT).show()
+            }
+            .show()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
