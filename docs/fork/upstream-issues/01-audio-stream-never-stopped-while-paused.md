@@ -1,4 +1,4 @@
-# Android: the audio output stream is never stopped while emulation is paused, and the resulting background CPU gets the process killed
+# Android: the audio output stream is never stopped while emulation is paused, and the resulting background CPU can get the process killed
 
 **Shape:** new issue.
 **Searched first:** `gh issue list -R azahar-emu/azahar --search "audio background cpu paused"`, `"battery drain sleeping"`, `"CPU background killed"`, `"excessive cpu"`. Nothing filed for this mechanism. The closest is #519 ("Huge battery consumption during Android Sleep"), which is the *symptom* of this bug reported without a cause, and #2433, which is a different problem in the same callback. Once this is filed, drop a one-line pointer to it on #519.
@@ -9,7 +9,7 @@
 
 - Azahar: upstream `master` at `073110cb4` (2026-09-07), between the `2126.1-rc2` tag and 2126.1. Behaviour is unchanged back through 2125.x, which is what the #519 reporters are on.
 - Test device: Samsung Galaxy Z Fold5 (SM-F946U1), Android 16 (API 36), Snapdragon 8 Gen 2, Adreno 740. This is my lab phone. Same SoC as the AYN Thor, different device, different panel, different thermals.
-- Intended target: AYN Thor, Android 13, Snapdragon 8 Gen 2. Not yet measured there — see the checklist at the bottom.
+- Intended target: AYN Thor (`ro.product.manufacturer=AYN`, `ro.product.model=AYN Thor`), Android 13 (API 33), `ro.soc.model=QCS8550` (SM8550 / Snapdragon 8 Gen 2), Adreno 740 on driver **512.676.53** — the Fold5 is on 512.676.1. CPU has not been measured there — see the checklist at the bottom.
 - Game: Animal Crossing: New Leaf, Vulkan, internal resolution 3x, package `org.azahar_emu.azahar` (vanilla flavour).
 
 ## Reproduction
@@ -46,7 +46,7 @@ A paused emulator produces no audio. The output device should be stopped, and th
 
 The audio device callback thread keeps running at roughly 100–200 calls a second for as long as the game is backgrounded, doing the full mixing path to produce silence. Over my 30-second window after Home, the process burned **8.19% of one core**, of which **7.82 points were the audio callback thread alone** (it shows as `AAudio_1` on this phone; in an earlier pass on the same device it showed as `AudioTrack` — it is cubeb's AAudio callback thread either way). Everything else was rounding error: `NativeEmulation` 0.30%, main 0.07%, the rest 0.00%.
 
-That is above the line Android kills you for. I have the kill record. From `dumpsys activity exit-info` on this phone, 2026-09-02, on a build with none of my audio changes in it:
+That is above the line Android kills you for, and on one device I have a kill record to go with it. From `dumpsys activity exit-info` on **the Fold5**, 2026-09-02, on a build with none of my audio changes in it:
 
 ```
 reason=9 EXCESSIVE RESOURCE USAGE  subreason=7 EXCESSIVE CPU USAGE
@@ -55,7 +55,17 @@ description="excessive cpu 27810 during 300120 dur=1129762 limit=2"  state=empty
 
 Read that out: 27.810 seconds of CPU in a 300.120-second window, while the process was in the `empty` state, 1,129,762 ms (18.8 minutes) after it became unimportant, against a limit of 2%. 27.81 / 300.12 is 9.27%, so 4.6x over. That is `ActivityManagerConstants`' background CPU check: `POWER_CHECK_INTERVAL` is 5 minutes, the thresholds are 25/25/10/**2**% by how long the process has been unimportant, anything past 15 minutes lands in the 2% tier, and only processes at `procState >= PROCESS_STATE_HOME` are checked at all. `dur=1129762` and `limit=2` match that last tier exactly.
 
-So the user-visible outcome is both of the things people report on #519: the device is warm and the battery is draining while it sleeps, *and* the game silently disappears while backgrounded, because Android killed the process for burning CPU it should not have been burning.
+So the user-visible outcome on that device is both of the things people report on #519: it is warm and the battery is draining while it sleeps, *and* the game silently disappears while backgrounded, because Android killed the process for burning CPU it should not have been burning.
+
+### How far the kill claim actually generalises
+
+Not as far as the sentence above reads on its own, and this is worth getting right before filing.
+
+The `EXCESSIVE RESOURCE USAGE` kill has been observed **on the Fold5 only**. A read-only snapshot of the AYN Thor on 2026-09-09 (`docs/fork/baselines/2026-09-09-thor-device-snapshot.md`) read `dumpsys activity exit-info` for both emulators installed on it, and there is **no excessive-CPU record on that device at all** — not for Azahar, not for melonDS, not at any date. There is not a `LOW_MEMORY` record either. What the Thor has is native crashes.
+
+That does not weaken the bug. The mechanism is source-evident, the CPU burn is measured, and `ActivityManagerConstants`' 2% tier is stock AOSP, so any Android device that leaves the app unimportant for more than fifteen minutes is exposed. But the *kill* is the part that depends on the device, the OEM's policy and how the user actually backgrounds the app, and one device that shows the burn has so far not produced a kill record.
+
+So the claim to file is: **the paused emulator burns background CPU well above Android's 2% tier, which is enough for `ActivityManagerConstants` to kill it, and here is a kill record from a device where it did.** Not: "this is why your game disappears". The battery/warmth half of #519 needs no kill at all and is the safer half of the report.
 
 One honesty note on the numbers: the size of the burn varies with the scene and with whether time stretching is engaged. An earlier 60-second pass on the same phone, same build family, read 1.78% at Home with the screen on and 2.02% with the screen off. The 8.19% figure is the one from the controlled before/after pass. It is never zero, and at the 2% tier there is no headroom for it to be anything but a problem.
 
@@ -120,7 +130,7 @@ I am not attaching a patch. The `Sink` API change alone is well past what your A
 
 - [ ] Reproduce the paused-CPU burn myself on the **Thor**, on an unmodified upstream build, with my own hands: play, Home, sample `/proc/<pid>/stat` over 30 s, and confirm the process total is well above 2% and that the audio device thread is where it goes.
 - [ ] Confirm per-thread that it is the audio callback thread and not something else on the Thor's Android 13 (thread names differ across AAudio paths — do not assume `AAudio_1`).
-- [ ] Reproduce a real `EXCESSIVE CPU USAGE` kill on the Thor: leave an unmodified build backgrounded past 15 minutes with no foreground service, then read `dumpsys activity exit-info org.azahar_emu.azahar` and get my own record. The one quoted above is from the Fold5. Do not file the Fold5 record as if it were a Thor record.
+- [ ] **Do not require a Thor kill record for this to be filable — there is not one, and there may never be.** The 2026-09-09 snapshot found no excessive-CPU record on the Thor for any package. What the report needs is the CPU burn reproduced on the Thor (previous two boxes); the kill record stays a Fold5 record, labelled as one. If a Thor kill does turn up while testing, quote it as a second data point; if it does not, file anyway with the burn plus the Fold5 kill, and say in the body that the kill was seen on one device and the burn on both. Never present the Fold5 record as a Thor record.
 - [ ] Sanity-check the 8.19% number once more on the Thor before quoting it, or quote the Thor's own number instead. The figure moves with the scene.
 - [ ] Confirm the same behaviour on an official Azahar build from the release page, not just a build from my tree, so the report is about upstream and not about my checkout.
 

@@ -9,7 +9,7 @@
 
 - Azahar: the crash reproduces on upstream `master` at `073110cb4` (2026-09-07). My measured baseline is my own commit `b8aa5f893`, which contains `073110cb4` and has **zero** changes under `src/video_core/` — I checked with `git log 073110cb4..b8aa5f893 -- src/video_core/`, which is empty. So the renderer under test is upstream's, unmodified, including the surface-recycling work that landed 2026-09-03 (`d216f961a`, `ab89916d1`, `aaa3d3032`, `c2783e110`, `2ef875ac1`).
 - Test device: Samsung Galaxy Z Fold5 (SM-F946U1), Android 16 (API 36), Snapdragon 8 Gen 2, **Adreno 740, stock Qualcomm driver 512.676.1**.
-- Intended target: AYN Thor, Android 13, Snapdragon 8 Gen 2, same GPU family.
+- Intended target: AYN Thor (`ro.product.model=AYN Thor`), Android 13 (API 33), `ro.soc.model=QCS8550`, **Adreno 740 on driver 512.676.53** — same GPU, a newer driver build than the one the counts below were taken on. Worth stating in the issue body, since three of the four failure signatures are inside the driver.
 - Game: Animal Crossing: New Leaf, Vulkan, `resolution_factor = 3`.
 
 ## Reproduction
@@ -64,6 +64,18 @@ The transition into a filtered, rescaled cache is what matters, not the filter. 
 
 `dumpsys activity exit-info` reports `APP CRASH(NATIVE) status=11`, not `LOW_MEMORY`, at the same footprint the process has on the runs that survive.
 
+### It happens on the AYN Thor too, on a different driver
+
+Everything above is the lab phone. A read-only snapshot of the Thor on 2026-09-09 (`docs/fork/baselines/2026-09-09-thor-device-snapshot.md`) read that device's own `dumpsys activity exit-info`. For `org.azahar_emu.azahar.thor` there is exactly one record:
+
+```
+2026-09-08 21:11:37  reason=5 APP CRASH (NATIVE)  status=11
+```
+
+That is the session in which Marty changed the texture filter mid-game and the app died — he reported it at the time, independently of any harness. Same failure class as the counts above, on the real target hardware, on Adreno driver **512.676.53** rather than the Fold5's 512.676.1.
+
+**What this is not:** a backtrace. No tombstone or logcat was captured for it, so it cannot be shown to be the same *signature* — `vkCmdEndRenderPass`, the device-lost `UNREACHABLE`, or the pipeline-create crash — only the same reason code and status. It is corroboration that the crash happens on real hardware and is not an artifact of the lab phone or its driver; it is not a second data point in the 12/20 count, and it must not be quoted as one. Getting the stack for a Thor reproduction is the single most valuable thing still missing from this report.
+
 ## What I ruled out
 
 I want to save whoever picks this up the time I spent:
@@ -104,7 +116,8 @@ The crash is only reachable by changing the filter while emulation is running �
 ## Marty must verify before filing
 
 - [ ] Reproduce it **on the Thor**, by hand, on an official Azahar build from the release page: boot at 3x with no filter, get into gameplay, change the filter, watch it die. Get my own count — even 3 out of 10 is enough to file, but it has to be mine and it has to be on upstream's binary.
-- [ ] Pull my own tombstone/logcat from the Thor and paste those backtraces, not the Fold5's.
+- [ ] Pull my own tombstone/logcat from the Thor and paste those backtraces, not the Fold5's. The 2026-09-08 21:11:37 record shows the crash reached the Thor, but no stack was kept for it, so it proves the class and not the signature.
+- [ ] State the Thor's driver version (512.676.53) in the body alongside the Fold5's (512.676.1). The counts are from the older driver; if the Thor rate differs sharply, that is itself worth reporting.
 - [ ] Confirm the 0/5 "set the filter before launching" result on the Thor too, since that is what the report offers as a workaround and I do not want to promise it if it does not hold on Android 13.
 - [ ] Check the affected-build field honestly: state which release I reproduced it on, not the commit my fork sits on.
 - [ ] Decide whether to mention the four lifetime bugs in the issue body or hold them back. They are unverified and I did not fix the crash with them; presented as leads, they are useful, presented as findings, they are overclaiming.
