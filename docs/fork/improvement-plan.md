@@ -20,7 +20,7 @@ this fork has ever taken was taken on a **Galaxy Z Fold5** (SM-F946U1, Android 1
 2316x904 cover panel, one run per metric, awake throughout, on a single screen with no real
 secondary display. Same SoC as the Thor. Not the same device, panel, thermal envelope, lid, RAM
 SKU or Android version. **Nothing in this fork has ever been measured on the target hardware.**
-Item **D-0** exists to fix that and is the highest-ranked item in the plan.
+Item **D-0 (RESCOPED: vibe check only, not a baseline — see Standard of evidence)** exists to fix that and is the highest-ranked item in the plan.
 
 ---
 
