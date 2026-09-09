@@ -2,10 +2,12 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <algorithm>
 #include <charconv>
 #include <chrono>
 #include <cstring>
 #include <istream>
+#include <limits>
 #include <ostream>
 #include <cryptopp/hex.h>
 #include <fmt/ranges.h>
@@ -42,8 +44,12 @@ static_assert(sizeof(CSTHeader) == 256, "CSTHeader should be 256 bytes");
 constexpr std::array<u8, 4> header_magic_bytes{{'C', 'S', 'T', 0x1B}};
 
 static std::string GetSaveStatePath(u64 program_id, u64 movie_id, u32 slot) {
-    const std::string slot_name =
-        slot == AutoSaveStateSlot ? "autosave" : fmt::format("{:02d}", slot);
+    // Generation 0 keeps the bare "autosave" name it has always had, so a state left by a build
+    // that knew only one autosave is picked up as the ring's first entry with no migration step.
+    const std::string slot_name = !IsAutoSaveSlot(slot) ? fmt::format("{:02d}", slot)
+                                  : slot == AutoSaveStateSlot
+                                      ? "autosave"
+                                      : fmt::format("autosave{}", slot - AutoSaveStateSlot);
     if (movie_id) {
         return fmt::format("{}{:016X}.movie{:016X}.{}.cst",
                            FileUtil::GetUserPath(FileUtil::UserPath::StatesDir), program_id,
@@ -155,8 +161,32 @@ SaveStateInfo GetSaveStateInfo(u64 program_id, u64 movie_id, u32 slot) {
     return info;
 }
 
+std::vector<SaveStateInfo> ListAutoSaveStates(u64 program_id, u64 movie_id) {
+    std::vector<SaveStateInfo> result;
+    result.reserve(AutoSaveGenerationCount);
+    for (u32 generation = 0; generation < AutoSaveGenerationCount; ++generation) {
+        auto info = GetSaveStateInfo(program_id, movie_id, AutoSaveStateSlot + generation);
+        if (info.slot == std::numeric_limits<u32>::max()) {
+            // Missing, truncated or written for another title: nothing to lose by reusing it
+            continue;
+        }
+        result.emplace_back(std::move(info));
+    }
+    // Newest first. Stable, and the loop above visits the generations in order, so two states
+    // that share a second (the header has one-second resolution) keep the lower generation first
+    // and both consumers of this list stay deterministic.
+    std::stable_sort(
+        result.begin(), result.end(),
+        [](const SaveStateInfo& lhs, const SaveStateInfo& rhs) { return lhs.time > rhs.time; });
+    return result;
+}
+
 SaveStateInfo GetAutoSaveStateInfo(u64 program_id, u64 movie_id) {
-    return GetSaveStateInfo(program_id, movie_id, AutoSaveStateSlot);
+    SaveStateInfo info{};
+    // Which generation SelectAutoSaveState settles on does not depend on the boot time, only the
+    // status it returns does, and that is what CheckAutoSaveState is for. Nothing to read here.
+    SelectAutoSaveState(ListAutoSaveStates(program_id, movie_id), 0, &info);
+    return info;
 }
 
 u64 GetLastNormalBootTime(u64 program_id) {
@@ -190,7 +220,7 @@ void RecordNormalBoot(u64 program_id, u64 time) {
 }
 
 AutoSaveResumeStatus ClassifyAutoSaveState(const SaveStateInfo& autosave, u64 last_boot_time) {
-    if (autosave.slot != AutoSaveStateSlot) {
+    if (!IsAutoSaveSlot(autosave.slot)) {
         return AutoSaveResumeStatus::None;
     }
     if (autosave.status == SaveStateInfo::ValidationStatus::BuildMismatch) {
@@ -204,12 +234,55 @@ AutoSaveResumeStatus ClassifyAutoSaveState(const SaveStateInfo& autosave, u64 la
     return AutoSaveResumeStatus::Resumable;
 }
 
-AutoSaveResumeStatus CheckAutoSaveState(u64 program_id, u64 movie_id, SaveStateInfo* info) {
-    const auto autosave = GetAutoSaveStateInfo(program_id, movie_id);
-    if (info) {
-        *info = autosave;
+AutoSaveResumeStatus SelectAutoSaveState(const std::vector<SaveStateInfo>& generations,
+                                         u64 last_boot_time, SaveStateInfo* selected) {
+    const auto report = [&](const SaveStateInfo& info) {
+        if (selected) {
+            *selected = info;
+        }
+        return ClassifyAutoSaveState(info, last_boot_time);
+    };
+
+    // generations is newest first, so the first loadable one is the newest loadable one
+    for (const auto& info : generations) {
+        if (info.status != SaveStateInfo::ValidationStatus::BuildMismatch) {
+            return report(info);
+        }
     }
-    return ClassifyAutoSaveState(autosave, GetLastNormalBootTime(program_id));
+    if (!generations.empty()) {
+        // Every generation was written by a build that cannot be loaded here. Name the newest of
+        // them, which is the one the user would recognise.
+        return report(generations.front());
+    }
+    if (selected) {
+        SaveStateInfo none{};
+        none.slot = std::numeric_limits<u32>::max();
+        *selected = none;
+    }
+    return AutoSaveResumeStatus::None;
+}
+
+AutoSaveResumeStatus CheckAutoSaveState(u64 program_id, u64 movie_id, SaveStateInfo* info) {
+    return SelectAutoSaveState(ListAutoSaveStates(program_id, movie_id),
+                               GetLastNormalBootTime(program_id), info);
+}
+
+u32 PickAutoSaveWriteSlot(const std::vector<SaveStateInfo>& generations) {
+    // A generation nothing has ever been written to costs nothing to claim
+    for (u32 generation = 0; generation < AutoSaveGenerationCount; ++generation) {
+        const u32 slot = AutoSaveStateSlot + generation;
+        if (std::none_of(generations.begin(), generations.end(),
+                         [slot](const SaveStateInfo& info) { return info.slot == slot; })) {
+            return slot;
+        }
+    }
+    // The ring is full: overwrite the oldest, which ListAutoSaveStates puts last. It is never
+    // the generation this boot resumed from, because that one is the newest.
+    return generations.back().slot;
+}
+
+u32 PickAutoSaveWriteSlot(u64 program_id, u64 movie_id) {
+    return PickAutoSaveWriteSlot(ListAutoSaveStates(program_id, movie_id));
 }
 
 static CSTHeader MakeHeader(u64 title_id) {
