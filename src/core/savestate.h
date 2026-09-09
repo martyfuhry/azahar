@@ -54,6 +54,9 @@ constexpr u32 AutoSaveGenerationCount = 3;
 // would be the very state the user was just offered.
 static_assert(AutoSaveGenerationCount >= 2);
 
+/// Passed as PickAutoSaveWriteSlot's `avoid_slot` when this boot selected no generation
+constexpr u32 NoAutoSaveSlot = std::numeric_limits<u32>::max();
+
 /// Whether `slot` addresses one of the autosave generations rather than a user slot
 constexpr bool IsAutoSaveSlot(u32 slot) {
     return slot >= AutoSaveStateSlot && slot < AutoSaveStateSlot + AutoSaveGenerationCount;
@@ -124,14 +127,16 @@ AutoSaveResumeStatus CheckAutoSaveState(u64 program_id, u64 movie_id,
  * session would overwrite the state the user was offered -- with periodic saving on, possibly
  * while its "resume?" dialog is still on screen.
  *
+ * It is therefore a required argument on both overloads and deliberately not defaulted: a
+ * default would let a future caller opt back into the unsafe behaviour by omission, silently.
+ * A caller with nothing to protect passes NoAutoSaveSlot.
+ *
  * Because the choice is made once per session rather than once per save, the ring holds the last
  * AutoSaveGenerationCount *sessions* rather than the last few minutes of one of them.
  */
-u32 PickAutoSaveWriteSlot(const std::vector<SaveStateInfo>& generations,
-                          u32 avoid_slot = std::numeric_limits<u32>::max());
+u32 PickAutoSaveWriteSlot(const std::vector<SaveStateInfo>& generations, u32 avoid_slot);
 
 /// PickAutoSaveWriteSlot on the files on disk
-u32 PickAutoSaveWriteSlot(u64 program_id, u64 movie_id,
-                          u32 avoid_slot = std::numeric_limits<u32>::max());
+u32 PickAutoSaveWriteSlot(u64 program_id, u64 movie_id, u32 avoid_slot);
 
 } // namespace Core

@@ -271,26 +271,29 @@ TEST_CASE("Core::PickAutoSaveWriteSlot", "[core][savestate]") {
     constexpr u64 base = 1'800'000'000;
 
     SECTION("claims generation 0 first, so a title played once keeps a single file") {
-        REQUIRE(Core::PickAutoSaveWriteSlot(std::vector<Core::SaveStateInfo>{}) ==
-                Core::AutoSaveStateSlot);
+        REQUIRE(Core::PickAutoSaveWriteSlot(std::vector<Core::SaveStateInfo>{},
+                                            Core::NoAutoSaveSlot) == Core::AutoSaveStateSlot);
     }
 
     SECTION("claims a generation that does not exist yet before reusing any that does") {
         const auto generations = Newest({AutoSave(base, Status::OK, 0)});
-        REQUIRE(Core::PickAutoSaveWriteSlot(generations) == Core::AutoSaveStateSlot + 1);
+        REQUIRE(Core::PickAutoSaveWriteSlot(generations, Core::NoAutoSaveSlot) ==
+                Core::AutoSaveStateSlot + 1);
     }
 
     SECTION("fills the gap a deleted generation leaves rather than overwriting a live one") {
         const auto generations =
             Newest({AutoSave(base, Status::OK, 0), AutoSave(base + 10, Status::OK, 2)});
-        REQUIRE(Core::PickAutoSaveWriteSlot(generations) == Core::AutoSaveStateSlot + 1);
+        REQUIRE(Core::PickAutoSaveWriteSlot(generations, Core::NoAutoSaveSlot) ==
+                Core::AutoSaveStateSlot + 1);
     }
 
     SECTION("overwrites the oldest generation once the ring is full") {
         const auto generations =
             Newest({AutoSave(base + 30, Status::OK, 0), AutoSave(base + 10, Status::OK, 1),
                     AutoSave(base + 20, Status::OK, 2)});
-        REQUIRE(Core::PickAutoSaveWriteSlot(generations) == Core::AutoSaveStateSlot + 1);
+        REQUIRE(Core::PickAutoSaveWriteSlot(generations, Core::NoAutoSaveSlot) ==
+                Core::AutoSaveStateSlot + 1);
     }
 
     SECTION("does not write over the selected generation when it is also the oldest, which "
@@ -390,7 +393,8 @@ TEST_CASE("Core::ListAutoSaveStates", "[core][savestate]") {
         REQUIRE(generations.size() == 1);
         REQUIRE(generations[0].slot == Core::AutoSaveStateSlot);
         // ...and that generation is free for the next session to claim
-        REQUIRE(Core::PickAutoSaveWriteSlot(program_id, movie_id) == Core::AutoSaveStateSlot + 1);
+        REQUIRE(Core::PickAutoSaveWriteSlot(program_id, movie_id, Core::NoAutoSaveSlot) ==
+                Core::AutoSaveStateSlot + 1);
     }
 
     SECTION("keeps every generation out of the user-facing slot list") {
@@ -417,7 +421,8 @@ TEST_CASE("Core::CheckAutoSaveState rotation", "[core][savestate]") {
         REQUIRE(info.slot == Core::AutoSaveStateSlot);
         REQUIRE(info.time == last_boot + 5);
         // and the session that reads it writes somewhere else, so it survives
-        REQUIRE(Core::PickAutoSaveWriteSlot(program_id, movie_id) != info.slot);
+        REQUIRE(Core::PickAutoSaveWriteSlot(program_id, movie_id, Core::NoAutoSaveSlot) !=
+                info.slot);
     }
 
     SECTION("resumes from a newer generation than the legacy file") {
