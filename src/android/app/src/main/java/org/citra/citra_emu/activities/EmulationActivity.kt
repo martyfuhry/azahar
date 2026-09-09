@@ -106,6 +106,7 @@ class EmulationActivity : AppCompatActivity() {
     private var isRotationBlocked: Boolean = true
     private var isEmulationRunning: Boolean = false
     private var isEmulationReady: Boolean = false
+    private var loggedUnboundControllerKey: Boolean = false
 
     private fun ensureUserDirectoryReady(): Boolean {
         if (DirectoryInitialization.areCitraDirectoriesReady()) return true
@@ -496,23 +497,92 @@ class EmulationActivity : AppCompatActivity() {
                 // cover for either a fault on androidx's side or in OEM skins (MIUI at least)
 
                 if (event.keyCode == KeyEvent.KEYCODE_BACK) {
+                    // A BACK that Android synthesised for a controller key we did not consume is
+                    // not the user asking for the menu; see isControllerKey.
+                    if (isControllerFallback(event)) {
+                        return true
+                    }
                     // If the hotkey is pressed, we don't want to open the drawer
                     if (!hotkeyUtility.hotkeyIsPressed) {
                         onBackPressed()
                         return true
                     }
                 }
-                return hotkeyUtility.handleKeyPress(event)
+                return hotkeyUtility.handleKeyPress(event) ||
+                    swallowControllerKey(event, log = true)
             }
 
             KeyEvent.ACTION_UP -> {
-                return hotkeyUtility.handleKeyRelease(event)
+                if (event.keyCode == KeyEvent.KEYCODE_BACK && isControllerFallback(event)) {
+                    return true
+                }
+                return hotkeyUtility.handleKeyRelease(event) ||
+                    swallowControllerKey(event, log = false)
             }
 
             else -> {
                 return false
             }
         }
+    }
+
+    /**
+     * Consumes a controller key that no binding claimed, so that it cannot leave this activity
+     * while the game is on screen.
+     *
+     * An unconsumed key falls back to the key character map's fallback action, which turns
+     * KEYCODE_BUTTON_B and KEYCODE_BUTTON_Y into BACK and KEYCODE_BUTTON_A and KEYCODE_BUTTON_X
+     * into DPAD_CENTER. A pad with no binding for a button therefore opens the emulation drawer
+     * on the first press, and every press after that walks the menu the drawer put the focus in
+     * - the game never sees the pad again. Swallowing the key here costs nothing (nothing behind
+     * the game wants it) and leaves the drawer to the back gesture, the menu button and the
+     * hotkey. The first one is logged: a pad that reaches this at all is unmapped, and the log
+     * is what says so when the report is "my buttons do nothing".
+     */
+    private fun swallowControllerKey(event: KeyEvent, log: Boolean): Boolean {
+        if (!isControllerKey(event)) {
+            return false
+        }
+        if (log && !loggedUnboundControllerKey) {
+            loggedUnboundControllerKey = true
+            Log.warning(
+                "[EmulationActivity] Nothing is bound to " +
+                    "${KeyEvent.keyCodeToString(event.keyCode)} from " +
+                    "\"${event.device?.name}\"; swallowing it so it cannot reach the menu. " +
+                    "Map the pad in Settings > Controls."
+            )
+        }
+        return true
+    }
+
+    /** True for a key that belongs to a controller rather than to the system or a keyboard. */
+    private fun isControllerKey(event: KeyEvent): Boolean {
+        val source = event.source
+        val fromController =
+            source and InputDevice.SOURCE_GAMEPAD == InputDevice.SOURCE_GAMEPAD ||
+                source and InputDevice.SOURCE_JOYSTICK == InputDevice.SOURCE_JOYSTICK
+        if (!fromController) {
+            return false
+        }
+        return KeyEvent.isGamepadButton(event.keyCode) || when (event.keyCode) {
+            KeyEvent.KEYCODE_DPAD_UP,
+            KeyEvent.KEYCODE_DPAD_DOWN,
+            KeyEvent.KEYCODE_DPAD_LEFT,
+            KeyEvent.KEYCODE_DPAD_RIGHT,
+            KeyEvent.KEYCODE_DPAD_CENTER -> true
+
+            else -> false
+        }
+    }
+
+    /** True for a key Android synthesised from an unconsumed controller key. */
+    private fun isControllerFallback(event: KeyEvent): Boolean {
+        val source = event.source
+        return event.flags and KeyEvent.FLAG_FALLBACK != 0 &&
+            (
+                source and InputDevice.SOURCE_GAMEPAD == InputDevice.SOURCE_GAMEPAD ||
+                    source and InputDevice.SOURCE_JOYSTICK == InputDevice.SOURCE_JOYSTICK
+                )
     }
 
     private fun onAmiiboSelected(selectedFile: String) {
