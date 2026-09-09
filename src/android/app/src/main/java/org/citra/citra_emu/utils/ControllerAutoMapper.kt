@@ -62,12 +62,20 @@ object ControllerAutoMapper {
         seededThisProcess = true
 
         val prefs = PreferenceManager.getDefaultSharedPreferences(CitraApplication.appContext)
-        if (prefs.getBoolean(PREF_SEEDED, false) || InputBindingSetting.hasAnyBinding()) {
-            return false
-        }
-
         val description = "${device.name} (vendor=0x%04x product=0x%04x)"
             .format(device.vendorId, device.productId)
+        val alreadySeeded = prefs.getBoolean(PREF_SEEDED, false)
+        val hasBinding = InputBindingSetting.hasAnyBinding()
+        if (alreadySeeded || hasBinding) {
+            // A pad whose buttons do nothing in-game got here and was turned away; say which of
+            // the two gates did it, because "seeded but nothing is bound" is a broken install
+            // while "a binding exists" is the user's own mapping and is meant to win.
+            Log.info(
+                "[ControllerAutoMapper] Not seeding for $description: " +
+                    "already seeded once=$alreadySeeded, a binding exists=$hasBinding"
+            )
+            return false
+        }
         if (InputBindingSetting.isJoyCon(device)) {
             Log.info("[ControllerAutoMapper] Seeding Joy-Con bindings for $description")
             InputBindingSetting.applyJoyConBindings()
