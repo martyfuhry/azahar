@@ -274,6 +274,18 @@
     <string name="image_flip">Flip</string>
 
     <!-- Graphics settings strings -->
+    <!-- Graphics preset (one choice that stands in for the settings that matter) -->
+    <string name="graphics_preset">Graphics quality</string>
+    <string name="graphics_preset_description">One choice that sets everything below. If that is all you want to decide, you are done.</string>
+    <string name="graphics_preset_battery">Battery saver</string>
+    <string name="graphics_preset_battery_summary">Draws games at %1$dx the original 3DS resolution. Softest picture, coolest handheld, longest battery life.</string>
+    <string name="graphics_preset_balanced">Balanced</string>
+    <string name="graphics_preset_balanced_summary">Draws games at %1$dx the original 3DS resolution. Almost as sharp, with more to spare when a game gets busy.</string>
+    <string name="graphics_preset_best">Best looking (recommended)</string>
+    <string name="graphics_preset_best_summary">Draws games at %1$dx the original 3DS resolution, which is as sharp as this screen can show.</string>
+    <string name="graphics_preset_custom">Custom</string>
+    <string name="graphics_preset_custom_summary">Whatever you set below. Changing any of those settings yourself switches to this on its own.</string>
+    <string name="graphics_preset_applied">Graphics quality set to %1$s</string>
     <string name="renderer">Renderer</string>
     <string name="graphics_api">Graphics API</string>
     <string name="spirv_shader_gen">Enable SPIR-V shader generation</string>

@@ -7,12 +7,19 @@ package org.citra.citra_emu.features.settings.ui
 import android.content.Context
 import android.content.SharedPreferences
 import android.content.res.Resources
+import android.graphics.Color
 import android.hardware.camera2.CameraAccessException
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
 import android.os.Build
+import android.text.Spannable
+import android.text.SpannableStringBuilder
 import android.text.TextUtils
+import android.text.style.ForegroundColorSpan
+import android.text.style.RelativeSizeSpan
+import android.widget.ArrayAdapter
 import androidx.preference.PreferenceManager
+import com.google.android.material.color.MaterialColors
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import org.citra.citra_emu.BuildConfig
 import org.citra.citra_emu.CitraApplication
@@ -48,6 +55,8 @@ import org.citra.citra_emu.features.settings.utils.SettingsFile
 import org.citra.citra_emu.fragments.ResetSettingsDialogFragment
 import org.citra.citra_emu.utils.BirthdayMonth
 import org.citra.citra_emu.utils.BuildUtil
+import org.citra.citra_emu.utils.GraphicsPreset
+import org.citra.citra_emu.utils.GraphicsPresets
 import org.citra.citra_emu.utils.GraphicsUtil
 import org.citra.citra_emu.utils.Log
 import org.citra.citra_emu.utils.SystemSaveGame
@@ -80,6 +89,10 @@ class SettingsFragmentPresenter(private val fragmentView: SettingsFragmentView) 
         if (setting.section == null || setting.key == null) {
             return
         }
+
+        // Every hand edit arrives here. If it moved one of the settings the active graphics
+        // preset owns, the configuration is no longer that preset and the picker has to say so.
+        GraphicsPresets.onSettingEdited(setting)
 
         val section = settings.getSection(setting.section!!)!!
         if (section.getSetting(setting.key!!) == null) {
@@ -988,9 +1001,82 @@ class SettingsFragmentPresenter(private val fragmentView: SettingsFragmentView) 
             override val defaultValue = ""
         }
 
+    /**
+     * The graphics quality picker.
+     *
+     * It is built by hand rather than handed to [SettingsAdapter.onSingleChoiceClick] because
+     * the stock single-choice dialog shows option names only, and "Balanced" on its own tells a
+     * player nothing about what they are choosing. Each row here carries the one-line
+     * explanation, including the resolution the preset works out to on this particular display.
+     */
+    private fun showGraphicsPresetDialog() {
+        val presets = GraphicsPreset.choices
+        val subtitleColor = MaterialColors.getColor(
+            settingsActivity,
+            com.google.android.material.R.attr.colorOnSurfaceVariant,
+            Color.GRAY
+        )
+        val labels: List<CharSequence> = presets.map { preset ->
+            SpannableStringBuilder().apply {
+                append(settingsActivity.getString(preset.titleId))
+                append("\n")
+                val start = length
+                append(GraphicsPresets.summaryFor(settingsActivity, preset))
+                setSpan(RelativeSizeSpan(0.8f), start, length, Spannable.SPAN_EXCLUSIVE_EXCLUSIVE)
+                setSpan(
+                    ForegroundColorSpan(subtitleColor),
+                    start,
+                    length,
+                    Spannable.SPAN_EXCLUSIVE_EXCLUSIVE
+                )
+            }
+        }
+        val adapter = ArrayAdapter(
+            settingsActivity,
+            R.layout.dialog_single_choice_two_line,
+            labels
+        )
+        val checked = presets.indexOf(GraphicsPresets.active).coerceAtLeast(0)
+        MaterialAlertDialogBuilder(settingsActivity)
+            .setTitle(R.string.graphics_preset)
+            .setSingleChoiceItems(adapter, checked) { dialog, which ->
+                dialog.dismiss()
+                val preset = presets[which]
+                GraphicsPresets.apply(settings, preset)
+                settingsActivity.showToastMessage(
+                    settingsActivity.getString(
+                        R.string.graphics_preset_applied,
+                        settingsActivity.getString(preset.titleId)
+                    ),
+                    false
+                )
+                fragmentView.onSettingChanged()
+                loadSettingsList()
+                // The list diff only rebinds rows whose enabled state changed, and a preset
+                // changes values rather than availability, so ask for a full rebind.
+                settingsAdapter.notifyDataSetChanged()
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
     private fun addGraphicsSettings(sl: ArrayList<SettingsItem>) {
         settingsActivity.setToolbarTitle(settingsActivity.getString(R.string.preferences_graphics))
         sl.apply {
+            // One choice that covers the settings that actually matter, above the individual
+            // settings it writes. Not runtime-runnable: it owns settings the core only reads at
+            // boot (asynchronous shader compilation, accurate multiplication), so it greys out
+            // during emulation exactly as those rows do.
+            add(
+                RunnableSetting(
+                    R.string.graphics_preset,
+                    R.string.graphics_preset_description,
+                    false,
+                    0,
+                    { showGraphicsPresetDialog() },
+                    { settingsActivity.getString(GraphicsPresets.active.titleId) }
+                )
+            )
             add(HeaderSetting(R.string.renderer))
             add(
                 SingleChoiceSetting(
