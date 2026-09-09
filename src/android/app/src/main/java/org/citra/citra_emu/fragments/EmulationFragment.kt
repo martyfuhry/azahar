@@ -544,6 +544,17 @@ class EmulationFragment :
         }
     }
 
+    // DrawerLayout saves whether it was open and reopens itself here. A session Android killed
+    // and restored boots the title from scratch behind that drawer, with the menu holding the
+    // focus a gamepad navigates with, which a cold boot never does. Put it back the way a cold
+    // boot leaves it; the drawer is locked closed until emulation reports it is ready anyway.
+    override fun onViewStateRestored(savedInstanceState: Bundle?) {
+        super.onViewStateRestored(savedInstanceState)
+        if (!emulationViewModel.emulationStarted.value && binding.drawerLayout.isOpen) {
+            binding.drawerLayout.closeDrawer(binding.inGameMenu, false)
+        }
+    }
+
     override fun onResume() {
         super.onResume()
         Choreographer.getInstance().postFrameCallback(this)
