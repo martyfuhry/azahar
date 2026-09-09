@@ -384,6 +384,13 @@ Given melonDS is now a nine-second-a-week app for him and Azahar is where he act
 honest recommendation is to **spend nothing more on the melonDS fork until a fresh crash is
 captured**. The one concrete, cheap thing worth doing is asking him to reproduce it once.
 
+**Done, 2026-09-09** — see `docs/fork/melonds-crash-capture.md`. The apparatus is in place:
+the fork's shipped `libmelonDS-android-frontend.so` turned out to be symbolicatable as built
+(`gitHubThorRelease` keeps unstripped intermediates), its symbols are archived by build id at
+`~/Development/azahar-builds/melonds-symbols-c86e8147/`, and
+`tools/thor/catch-melonds-crash.sh` captures and symbolicates a fresh crash in one read-only
+command. Option 2 above (`adb root` on the eng build) is wired in as `--root`.
+
 ---
 
 ### Provenance

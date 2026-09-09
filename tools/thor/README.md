@@ -172,3 +172,45 @@ windows. The phone must not be locked with a PIN that `dismiss-keyguard` cannot 
 - Same conditions for before/after: scrcpy off, same fold state, same ROM and scene,
   same screen state, and the identity block pasted next to the numbers.
 - Raw captures under `OUT` are the evidence; keep them with the baseline document.
+
+## `catch-melonds-crash.sh` — melonDS crash capture
+
+A separate, single-shot script with a different job from `measure.sh`: it does not measure
+anything, it **rescues a native crash record before Android rotates it away**. Run it on the
+host as soon as Marty reports that melonDS died. Full procedure and rationale in
+`docs/fork/melonds-crash-capture.md`.
+
+```
+export ANDROID_SERIAL=7f87e972          # the AYN Thor
+tools/thor/catch-melonds-crash.sh
+```
+
+It is read-only against the device — `dumpsys`, `logcat`, `bugreport`, `ls`/`cat`, `pull`,
+and nothing else. It never installs, launches, force-stops, or changes a setting. `--root`
+is the single exception (it restarts adbd as root to read `/data/tombstones` directly on the
+Thor's eng build) and is off by default.
+
+What it collects, into a timestamped directory:
+
+| | |
+|---|---|
+| `00`–`01` | capture identity, and every installed `melon*` package with its version |
+| `02` | `dumpsys activity exit-info` per package — the *record that* a crash happened |
+| `03`–`04` | `dumpsys dropbox`, plus `--print` for `data_app_native_crash`, `SYSTEM_TOMBSTONE`, `data_app_crash`, `data_app_anr` — where the *stack* lives |
+| `05` | `logcat -b crash -d` and the filtered main buffer |
+| `06` | the app's own `files/emulator-recovery/` journal (`session.json`, `journal.jsonl`) |
+| `07` | any `melonds-diagnostics-*.zip` the app's "Export diagnostics" wrote to `/sdcard` |
+| `08` | `adb bugreport` and the tombstones extracted from it (`--no-bugreport` skips it) |
+| `09` | symbolicated stacks |
+| `SUMMARY.md` | what was found, and **whether the stack was already gone** |
+
+Symbolication runs `ndk-stack` and then a per-frame `llvm-symbolizer` pass, because
+`ndk-stack` only recognises blocks that carry the `*** ***` tombstone header and silently
+skips logcat-prefixed stacks. Both use the archived unstripped library in
+`~/Development/azahar-builds/melonds-symbols-c86e8147/`.
+
+**It checks the build id before it believes a symbol.** If the crashed
+`libmelonDS-android-frontend.so` does not carry the build id the archive was built from, the
+summary and the stack file both open with a warning that every name and line below is
+fiction. A stack symbolicated against the wrong binary is not a weaker answer, it is a
+fabricated one.
