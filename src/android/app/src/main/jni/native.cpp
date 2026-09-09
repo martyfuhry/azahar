@@ -704,12 +704,17 @@ void Java_org_citra_citra_1emu_NativeLibrary_secondarySurfaceChanged(JNIEnv* env
     }
     s_secondary_surface = ANativeWindow_fromSurface(env, surf);
     if (!s_secondary_surface) {
+        LOG_WARNING(Frontend, "Secondary surface changed, but failed to acquire the native window");
         return;
     }
 
     bool notify = false;
     if (secondary_window) {
-        // Second window already created, so update it
+        // Second window already created, so update it. This is also the hot-plug path: the
+        // frontend only shows a Presentation while a real second display is in use, so this is
+        // where a display that appeared mid-session gets its surface. OnSurfaceChanged() stores
+        // it in the window info, which is what the renderer polls each frame to decide whether
+        // to build a present window for it and start rendering the second screen again.
         notify = secondary_window->OnSurfaceChanged(s_secondary_surface);
 
         // Log the dimensions for debugging
@@ -717,8 +722,10 @@ void Java_org_citra_citra_1emu_NativeLibrary_secondarySurfaceChanged(JNIEnv* env
         int32_t height = ANativeWindow_getHeight(s_secondary_surface);
         LOG_INFO(Frontend, "Secondary Surface changed to {}x{}", width, height);
     } else {
-        LOG_WARNING(Frontend,
-                    "Second Window does not exist in native.cpp but surface changed. Ignoring.");
+        // Not an error: the surface can arrive before the emulation thread has built its
+        // windows (RunCitra() picks s_secondary_surface up under the same mutex), or after
+        // TryShutdown() has torn them down.
+        LOG_INFO(Frontend, "Secondary surface changed before the second window exists");
     }
 
     if (notify && system.IsPoweredOn()) {
@@ -786,7 +793,10 @@ void Java_org_citra_citra_1emu_NativeLibrary_doFrame([[maybe_unused]] JNIEnv* en
     if (window) {
         window->TryPresenting();
     }
-    if (secondary_window) {
+    // The secondary window outlives the Presentation that feeds it, so an existing window is not
+    // proof that anything is on screen. Presenting to a window with no surface is at best wasted
+    // work on the UI thread (a no-op on Vulkan, an eglMakeCurrent/eglSwapBuffers pair on GL).
+    if (secondary_window && secondary_window->GetWindowInfo().render_surface) {
         secondary_window->TryPresenting();
     }
 }

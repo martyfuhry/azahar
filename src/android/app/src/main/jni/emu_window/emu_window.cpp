@@ -54,8 +54,20 @@ void EmuWindow_Android::OnFramebufferSizeChanged() {
 EmuWindow_Android::EmuWindow_Android(ANativeWindow* surface, bool is_secondary)
     : EmuWindow{is_secondary}, host_window(surface) {
     LOG_DEBUG(Frontend, "Initializing EmuWindow_Android");
+    // window_info.render_surface is what the renderers use to decide whether this window has
+    // anything to present to (see RendererVulkan::SwapBuffers), so it has to be accurate from
+    // construction on, not only after the first OnSurfaceChanged(). The Vulkan window sets the
+    // same pair in CreateWindowSurface(); the GL one never did.
+    window_info.type = Frontend::WindowSystemType::Android;
+    window_info.render_surface = surface;
     if (!surface) {
-        LOG_CRITICAL(Frontend, "surface is nullptr");
+        // Expected for the secondary window when no secondary display is in use: the frontend
+        // creates no Presentation, so there is no surface until one is plugged in at runtime.
+        if (is_secondary) {
+            LOG_INFO(Frontend, "No secondary surface; secondary window starts inactive");
+        } else {
+            LOG_CRITICAL(Frontend, "surface is nullptr");
+        }
         return;
     }
 
@@ -69,9 +81,17 @@ EmuWindow_Android::~EmuWindow_Android() {
 }
 
 void EmuWindow_Android::MakeCurrent() {
+    // Absent when the graphics context could not be created, including the legitimate case of a
+    // secondary window that has never had a surface (no secondary display in use).
+    if (!core_context) {
+        return;
+    }
     core_context->MakeCurrent();
 }
 
 void EmuWindow_Android::DoneCurrent() {
+    if (!core_context) {
+        return;
+    }
     core_context->DoneCurrent();
 }

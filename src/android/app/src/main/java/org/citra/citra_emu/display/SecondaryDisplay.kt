@@ -7,7 +7,6 @@ package org.citra.citra_emu.display
 import android.app.Presentation
 import android.content.Context
 import android.hardware.display.DisplayManager
-import android.hardware.display.VirtualDisplay
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -26,7 +25,6 @@ import org.citra.citra_emu.utils.RefreshRateUtil
 class SecondaryDisplay(val context: Context) : DisplayManager.DisplayListener {
     private var pres: SecondaryDisplayPresentation? = null
     private val displayManager = context.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
-    private val vd: VirtualDisplay
     private val handler = Handler(Looper.getMainLooper())
 
     /**
@@ -48,14 +46,6 @@ class SecondaryDisplay(val context: Context) : DisplayManager.DisplayListener {
         get() = getSecondaryDisplays()
 
     init {
-        vd = displayManager.createVirtualDisplay(
-            HIDDEN_DISPLAY_NAME,
-            1920,
-            1080,
-            320,
-            null,
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_PRESENTATION
-        )
         displayManager.registerDisplayListener(this, null)
     }
 
@@ -94,7 +84,6 @@ class SecondaryDisplay(val context: Context) : DisplayManager.DisplayListener {
 
             isNotDefaultOrPresentable &&
                 it.displayId != ownDisplayId &&
-                it.name != HIDDEN_DISPLAY_NAME &&
                 (!requirePoweredOn || it.state != Display.STATE_OFF) &&
                 it.isValid
         }
@@ -151,21 +140,23 @@ class SecondaryDisplay(val context: Context) : DisplayManager.DisplayListener {
 
         // (The NONE layout is theoretically no longer selectable, but the check stays for
         // backwards compatibility.)
-        val displayToUse = if (displays.isEmpty() || !isSecondaryDisplayWanted()) {
+        if (displays.isEmpty() || !isSecondaryDisplayWanted()) {
+            // Nothing to present on. This used to fall back to a hidden 1920x1080
+            // VirtualDisplay, which cost the emulation thread a second render and present of
+            // every single frame (one fence wait, one fullscreen renderpass, one blit, one
+            // queue submit, one queue present) plus a second 1080p swapchain in VRAM, for
+            // pixels that no one could ever see. Show no Presentation at all instead; the
+            // native side drops its secondary swapchain when the surface goes away and
+            // rebuilds it the moment a real display shows up again.
             currentDisplayId = -1
-            vd.display
-        } else {
-            // An explicit choice from the in-game display menu wins over the automatic pick.
-            val chosen = displays.firstOrNull { it.displayId == preferredDisplayId }
-                ?: pickDisplay(displays, defaultDisplayName())
-            currentDisplayId = chosen.displayId
-            chosen
-        }
-
-        if (displayToUse == null) {
             releasePresentation()
             return
         }
+
+        // An explicit choice from the in-game display menu wins over the automatic pick.
+        val displayToUse = displays.firstOrNull { it.displayId == preferredDisplayId }
+            ?: pickDisplay(displays, defaultDisplayName())
+        currentDisplayId = displayToUse.displayId
 
         // If our presentation is already showing on the right display, leave it alone. This
         // compares display *ids*: `availableDisplays` hands out freshly built Display objects,
@@ -228,8 +219,8 @@ class SecondaryDisplay(val context: Context) : DisplayManager.DisplayListener {
     /**
      * Runs the pick, and if a usable panel exists but is still powered off - the lid-open case,
      * where onRestart lands while the bottom screen still reports STATE_OFF and we would
-     * otherwise fall back to the hidden virtual display until some unrelated display callback
-     * arrived - schedules exactly one re-check. Exactly one: the re-check calls updateDisplay()
+     * otherwise show no bottom screen at all until some unrelated display callback arrived -
+     * schedules exactly one re-check. Exactly one: the re-check calls updateDisplay()
      * directly, so a panel that stays off cannot turn this into a polling loop.
      */
     private fun updateDisplayAndRecheck() {
@@ -238,8 +229,8 @@ class SecondaryDisplay(val context: Context) : DisplayManager.DisplayListener {
         if (context is android.app.Activity && (context.isFinishing || context.isDestroyed)) {
             return
         }
-        // Only worth repeating when we fell back to the hidden display while a real panel
-        // exists and is merely asleep.
+        // Only worth repeating when we ended up with no secondary display at all while a
+        // real panel exists and is merely asleep.
         if (currentDisplayId == -1 &&
             isSecondaryDisplayWanted() &&
             getSecondaryDisplays(requirePoweredOn = false).any { it.state == Display.STATE_OFF }
@@ -257,16 +248,24 @@ class SecondaryDisplay(val context: Context) : DisplayManager.DisplayListener {
     }
 
     fun releasePresentation() {
+        val hadPresentation = pres != null
         try {
             pres?.dismiss()
         } catch (_: Exception) { }
         pres = null
+        // dismiss() detaches the decor view synchronously on the main thread, so the
+        // SurfaceHolder callback above normally tells the core already. It does not fire when
+        // the Presentation never got as far as showing a surface (the display went away first),
+        // and leaving a stale ANativeWindow behind keeps the core rendering a second frame to a
+        // window nothing displays. The native call is a no-op once the surface is released.
+        if (hadPresentation) {
+            NativeLibrary.secondarySurfaceDestroyed()
+        }
     }
 
-    fun releaseVD() {
+    fun release() {
         cancelDisplayRecheck()
         displayManager.unregisterDisplayListener(this)
-        vd.release()
     }
 
     override fun onDisplayAdded(displayId: Int) {
@@ -281,8 +280,6 @@ class SecondaryDisplay(val context: Context) : DisplayManager.DisplayListener {
     }
 
     companion object {
-        private const val HIDDEN_DISPLAY_NAME = "HiddenDisplay"
-
         /**
          * How long to wait before looking again when the panel we want is still powered off.
          * Long enough for the panel to come up after a lid open, short enough that the bottom

@@ -94,11 +94,11 @@ void RendererOpenGL::SwapBuffers() {
     OpenGLState prev_state = OpenGLState::GetCurState();
     state.Apply();
 #ifdef ANDROID
-    if (secondary_window) {
-        secondaryWindowEnabled = true;
-    } else {
-        secondaryWindowEnabled = false;
-    }
+    // The secondary EmuWindow lives for the whole session, but the frontend only puts a surface
+    // behind it while a real second display is in use. No surface means nothing to present to:
+    // skip the second render, and let the primary pass clear game_frames_updated instead.
+    secondaryWindowEnabled =
+        secondary_window != nullptr && secondary_window->GetWindowInfo().render_surface != nullptr;
 #else
     if (Settings::values.layout_option.GetValue() == Settings::LayoutOption::SeparateWindows) {
         ASSERT(secondary_window);
@@ -121,9 +121,7 @@ void RendererOpenGL::SwapBuffers() {
     RenderToMailbox(main_layout, render_window.mailbox, false);
 
 #ifdef ANDROID
-    // On Android, if secondary_window is defined at all,
-    // it means we have a second display
-    if (secondary_window) {
+    if (secondaryWindowEnabled) {
         const auto& secondary_layout = secondary_window->GetFramebufferLayout();
         isSecondaryWindow = true;
         RenderToMailbox(secondary_layout, secondary_window->mailbox, false);

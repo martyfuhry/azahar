@@ -4,6 +4,9 @@
 
 #pragma once
 
+#include <memory>
+#include <mutex>
+
 #include "common/common_types.h"
 #include "common/math_util.h"
 #include "video_core/renderer_base.h"
@@ -136,6 +139,10 @@ private:
     StreamBuffer vertex_buffer;
     DescriptorUpdateQueue update_queue;
     RasterizerVulkan rasterizer;
+    /// Guards secondary_present_window_ptr. SwapBuffers() creates and destroys it on the
+    /// emulation thread as the secondary display comes and goes; NotifySurfaceChanged() reads
+    /// it from the frontend's UI thread.
+    std::mutex secondary_present_mutex;
     std::unique_ptr<PresentWindow> secondary_present_window_ptr;
     DescriptorHeap present_heap;
     vk::UniquePipelineLayout present_pipeline_layout;
