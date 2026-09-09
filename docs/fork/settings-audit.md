@@ -25,17 +25,24 @@ there are no per-game configs on Android.
 ## 1. The headline
 
 **His configuration is clean.** After his own hardware-shader fix there is nothing else stale
-in it. Twenty-one keys carry an explicit value; **seventeen of them are the default**, and the
-**four that are not are all deliberate** — they are the Thor profile this fork writes on first
-run. There is no second `use_hw_shader` hiding in there.
+in it. Twenty-two keys now carry an explicit value; **seventeen of them are the default**, four
+of the remaining five are the deliberate Thor profile this fork writes on first run, and the
+fifth is `shaders_accurate_mul`, set during this audit. There is no second `use_hw_shader`
+hiding in there.
+
+*(The first read of the file found twenty-one explicit keys. `shaders_accurate_mul` was blank
+then and was turned on partway through — see §3, which is the one finding that changed the
+device.)*
 
 That is the honest answer to "probably one of them will make a huge difference." For his
 current file: no, not any more. But the *mechanism* that let the first one survive is intact
 and is the thing worth fixing, so §5 is the load-bearing section of this document.
 
-One live issue remains, and it is invisible rather than stale: **`shaders_accurate_mul` is
-effectively off** because the key is blank and Android's reader hardcodes a `false` fallback
-that disagrees with the C++ default. See §3.
+One live issue was found, and it was invisible rather than stale: **`shaders_accurate_mul` was
+effectively off**, because the key was blank and Android's reader hardcodes a `false` fallback
+that disagrees with the C++ default. During this audit it was turned on and **demonstrated to
+fix a visibly broken game** — Pokémon X renders a starter Pokémon almost entirely white without
+it. His device is now correct; the platform default still is not, for everybody else. See §3.
 
 ### How the damage actually happened, verified
 
@@ -93,6 +100,7 @@ Android-effective value is the one that matters, and the disagreement is called 
 | Key | His value | Android-effective default | Verdict |
 |---|---|---|---|
 | `use_hw_shader` | `true` | `true` (`settings.h:560`) | **Was `false`. Repaired by hand 2026-09-09.** The one that mattered. |
+| `shaders_accurate_mul` | `true` | `false` on Android (`config.cpp:143`), `true` in `settings.h:563` | **Was blank, i.e. off. Set during this audit** and shown to fix Pokémon X's white Froakie — §3. Now non-default *relative to Android*, and correct. |
 | `resolution_factor` | `4` | `1` (`settings.h:572`) | **Non-default, deliberate.** Thor profile. |
 | `layout_option` | `1` (Single Screen) | `2` (Large Screen — `config.cpp:189-190`) | **Non-default, deliberate.** Thor profile. |
 | `secondary_display_layout` | `4` (Opposite Screen Only) | `0` (None — `config.cpp:221-223`) | **Non-default, deliberate.** Thor profile. |
@@ -194,36 +202,61 @@ The upstream draft is **`docs/fork/upstream-issues/12-android-accurate-multiplic
 written in the same register as the rest of that directory. It is scoped to **the divergence
 alone** and explicitly explains no existing bug.
 
-**A correction worth recording, because I got this wrong first.** An earlier version of the
-draft argued this divergence was the likely cause of open **#1445** ("Pokemon X - Certain pokemon
-have white buggy textures", Adreno, Android) and of stale **#1292** / **#440**. The match looked
-good from the issue titles — right platform, right GPU vendor, a symptom accurate multiplication
-plausibly affects, and a reporter saying it does not happen on Citra. Reading the full comment
-threads killed it:
+### The claim was made, withdrawn, and reinstated — the sequence is the lesson
+
+This went through three states in one session, and the path is worth more than any single one of
+the conclusions.
+
+**State 1 — asserted on inference.** The first draft argued this divergence was the likely cause
+of open **#1445** ("Pokemon X - Certain pokemon have white buggy textures", Adreno, Android) and
+of stale **#1292** / **#440**. The match looked strong from the issue titles: right platform,
+right GPU vendor, a symptom accurate multiplication plausibly affects, and a reporter saying it
+does not happen on Citra. **No comment thread had been read.**
+
+**State 2 — withdrawn on comment evidence.** Reading #1445 to the bottom appeared to kill it:
 
 - `sugarbeets` says enabling accurate multiplication fixes it — but
 - `Haisom` replies it *"Doesn't work on Android + OpenGL. Selecting Vulkan fixes the issue on
-  Android but it's too laggy"*, with a screenshot;
+  Android but it's too laggy"*;
 - `ShinyMooTank` reports the same symptom in Pokémon Alpha Sapphire on **desktop** (RTX 3080)
-  with accurate multiplication **already on**, where it defaults on anyway;
+  with accurate multiplication **already on**;
 - `takeshineale128` sees nothing wrong on a GTX 1660 or an S25 Ultra;
 - `JengaMasterG` needed Vulkan *and* accurate multiplication *and* a shader-cache wipe.
 
-So the symptom survives the setting being enabled, appears where the setting already defaults on,
-and tracks the **renderer** more than the setting. Whatever #1445 is, it is multi-factor and it
-is not "the Android hardcoded `false`".
+That reads as multi-factor with the renderer mattering more than the setting, so the causal claim
+came out and the draft was rescoped to the bare divergence.
 
-**The lesson, since it generalises past this one issue:** a title-level match between a symptom
-and a plausible cause is not evidence. The comment threads were three minutes of reading and they
-inverted the conclusion. Any future draft in that directory that leans on an existing issue
-should read that issue to the bottom first.
+**State 3 — reinstated on device evidence.** Marty then reproduced it. On the Thor (Adreno 740,
+driver 512.676.53, **Vulkan**, 4x, no texture filter), Pokémon X's starter-selection scene
+rendered **Froakie almost entirely white while Chespin and Fennekin beside him were correct**.
+Setting `shaders_accurate_mul = true`, changing nothing else and restarting, **Froakie renders
+correctly blue**. Two screenshots, and I confirmed independently from the live `config.ini` and
+the emulator's own boot-log settings dump that accurate multiplication is the only differing
+value.
 
-What survives is the part that was always ours to report and needs no external bug at all: the
-Android reader hardcodes a fallback that contradicts `settings.h`, the key reads as blank so it
-looks untouched, and a user has no way to learn their platform differs. Those threads are cited
-in the draft only as **context that users are already confused by graphical differences across
-platforms, renderers and versions** — a landscape where an undocumented per-platform default is
-one more variable nobody needs.
+That directly contradicts `Haisom`'s comment on both halves — the bug *was* present on Android
+under Vulkan, and the setting *did* fix it there — which is presumably why the thread never
+converged.
+
+**What is still open:** `ShinyMooTank`'s desktop report, with the setting already on, cannot be
+caused by an Android-only default. Either the white-texture symptom has more than one cause, or
+something else in that configuration (8x, xBRZ) is involved. The draft says so and does not
+propose closing #1445.
+
+**The lesson, which is about method rather than about this setting.** The comment threads were
+right to overturn state 1 — reasoning from a title-level match is not evidence, and reading them
+was three minutes well spent. But **comments from strangers with unknown configurations are not
+evidence either**, and in state 2 I treated them as decisive when they were only suggestive.
+Neither inference nor testimony settled this; one controlled test on real hardware did, in
+minutes. Where a claim is cheaply testable on a device we own, test it before either asserting
+*or* retracting. The general form: reading the thread should lower confidence in an untested
+claim, not substitute for the test.
+
+The divergence itself never depended on any of this. It was always ours to report: the Android
+reader hardcodes a fallback that contradicts `settings.h`, the key reads blank so it looks
+untouched, the Kotlin default independently restates the wrong value, and nothing anywhere says
+the platforms differ. The reproduction upgrades that from a consistency complaint to a defect
+with a demonstrated user-visible consequence.
 
 **And the divergence may be deliberate**, since accurate multiplication costs shader throughput
 and mobile is where that would matter. If so the defect is the *invisibility*, and the right fix
@@ -543,11 +576,15 @@ to be accepted.
 
 1. **`shaders_accurate_mul`'s Android default contradicts the C++ default** (§3). A one-line
    inconsistency that makes Android and desktop behave differently from one tree, with nothing in
-   the UI, the config file, the log or the documentation to say so. **Drafted:
-   `upstream-issues/12-android-accurate-multiplication-hardcoded-off.md`**, scoped to the
-   divergence and explaining no existing bug — the Pokémon link was investigated and #1445's own
-   comments argue against it (§3). If the value is deliberate, the ask is to make it visible
-   rather than to change it, which is the easier thing for a maintainer to say yes to.
+   the UI, the config file, the log or the documentation to say so — **and it makes Pokémon X
+   render a starter Pokémon almost entirely white on a stock Android install**, reproduced on the
+   Thor with a before/after screenshot pair. **Drafted:
+   `upstream-issues/12-android-accurate-multiplication-hardcoded-off.md`.** This is now the
+   strongest item in the batch: source-evident cause, demonstrated user-visible effect, and a
+   one-line fix. The report still says n=1 and does not claim to close #1445, since
+   `ShinyMooTank`'s desktop case is unexplained. If the value turns out to be deliberate, the ask
+   is to make it visible rather than to change it — the easier thing for a maintainer to say yes
+   to, and it fixes the part that is unambiguously a defect.
 2. **The Debug screen's warning header is wrong for three of its switches** (§1).
    *"Modifying these settings will slow emulation"* is false for `use_cpu_jit`,
    `use_hw_shader` and `use_shader_jit`, where modifying means turning off something already on.

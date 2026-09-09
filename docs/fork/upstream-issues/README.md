@@ -41,23 +41,30 @@ reads the third report differently.
 | 9 | `07-custom-textures-never-freed.md` | new issue | new |
 | 10 | `11-comment-1308-2118-custom-textures-vulkan.md` | comment | #2118 (file after 9, so it can point at it) |
 | 11 | `05-vulkan-swapchain-lifetime-bugs.md` | new issue, or drop | new, or a comment on #1693 |
-| 12 | `12-android-accurate-multiplication-hardcoded-off.md` | new issue | new; cites #1445 / #1292 / #440 / #1136 as context only, explains none of them |
+| 12 | `12-android-accurate-multiplication-hardcoded-off.md` | new issue | new; supplies a cause for the Android half of #1445, without closing it |
 
-Number 12 is appended rather than slotted in, to avoid renumbering, but it does not belong at the
-end on merit and it is **independent of every draft above it** — different subsystem, no shared
-code, no shared reproduction. Its claim (the Android config reader hardcodes a default that
-contradicts `settings.h`, so Android and desktop disagree from one tree with nothing visible to
-the user) is the cheapest thing in this directory to verify — two lines of source and one log
-line — and among the hardest to argue with, so by the ordering rule above it would sit near the
-front.
+Number 12 is appended rather than slotted in, to avoid renumbering, but on merit it belongs
+**near the front** — arguably first. It has what none of the others combine: a source-evident
+cause of two lines, a reproduced user-visible symptom with a before/after screenshot pair, and a
+one-line fix. It is also independent of every draft above it, so it can be filed at any point.
 
-It is also the one draft that has already been **wrong once**, and the correction is worth
-carrying: an earlier version claimed this divergence explained #1445's wrong-colour reports in
-Pokémon X/Y. Reading that thread's comments in full killed it — the symptom shows up on desktop
-where the setting already defaults on, survives being enabled on Android + OpenGL, and tracks the
-renderer more than the setting. The draft now scopes itself to the divergence and says explicitly
-that it explains nothing else. **Do not let the Pokémon framing back in**; it was the only part
-that could have got the report dismissed.
+It is the one draft whose central claim was **asserted, withdrawn, and then reinstated**, and the
+sequence is worth carrying because it is a lesson about method. It was first asserted from a
+title-level match with #1445 with no comment thread read; withdrawn after reading those comments,
+which look like they refute it (`Haisom` reporting that accurate multiplication does not help and
+that Vulkan alone fixes it; `ShinyMooTank` hitting the same symptom on desktop with the setting
+already on); then reinstated when the thing was actually tested on hardware and the setting
+plainly fixed it under Vulkan on an Adreno 740.
+
+So: reading the thread was right and should have lowered confidence in an untested claim — but
+**comments from strangers with unknown configurations are not evidence either**, and treating
+them as decisive was the same mistake in the other direction. One controlled test settled in
+minutes what neither inference nor testimony could. Where a claim is cheaply testable on hardware
+we own, test it before asserting *or* retracting.
+
+Two things to preserve when filing: **n=1** — one device, one driver, one game, Vulkan only — and
+an explicit acknowledgement that `ShinyMooTank`'s desktop case is unexplained, so this does not
+close #1445 and #1292 / #440 are not duplicates on this evidence.
 
 Number 11 is last on purpose. It is three real code defects that I never managed to turn into a
 crash on demand, and a report with no reproduction is a weaker thing to put in front of a
@@ -127,16 +134,20 @@ lid-cycle soak with a short dwell for the semaphore double-destroy, and repeated
 the `UNREACHABLE()` on a device-lost acquire. Re-confirm every line number in `vk_swapchain.cpp` on
 the day of filing — that file moved recently.
 
-**12 — accurate multiplication hardcoded off on Android.** Cheap, and now narrowly scoped.
-Confirm the two lines exist in upstream `master` at a named commit, then show an untouched
-Android config logging `Renderer_ShadersAccurateMul: false` beside an untouched desktop config
-logging `true`, both on official release-page builds. That is the entire report. Also worth
-measuring what accurate multiplication costs on Adreno first: if it is expensive, lead with
-*"make the divergence visible"* rather than *"change the default"* — the draft argues that is the
-better report regardless, since it keeps Android's behaviour and still fixes the invisibility.
-**No Pokémon claim.** That hypothesis was investigated and the thread's own comments argue
-against it; anything I observe playing Pokémon X belongs in a comment on #1445, not in this
-issue.
+**12 — accurate multiplication hardcoded off on Android.** Mostly done, and cheap to finish. The
+rendering half is **already reproduced** on the Thor: Pokémon X's starter scene with Froakie
+white, then correct after enabling the setting and restarting, nothing else changed. What is
+left is packaging. Attach **both screenshots** — without them the report is an assertion — and
+commit them next to the draft so they survive. Re-run the before/after on an **official release
+build** rather than my checkout, and capture the emulator's own
+`Renderer_ShadersAccurateMul: false` boot line while doing it, because both device logs have
+since rotated to `true` and no longer hold the original state. Confirm the two source lines in
+upstream `master` at a named commit. Then two disciplines that decide whether this lands: say
+**n=1** and mean it, and **acknowledge `ShinyMooTank`'s desktop case** rather than omitting it —
+a desktop report with the setting already on cannot be caused by an Android-only default, so the
+symptom likely has more than one cause and this is one of them. Optional and genuinely useful:
+test Android + OpenGL, since `Haisom`'s claim that the setting does not help there is untested by
+this run and may be true.
 
 ---
 
