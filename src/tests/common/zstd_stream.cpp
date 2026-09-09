@@ -137,3 +137,63 @@ TEST_CASE("Common::Compression::ZSTDInputStreamBuf", "[common][zstd]") {
         REQUIRE(in.Failed());
     }
 }
+
+TEST_CASE("Common::Compression::ZSTDOutputStreamBuf compression levels", "[common][zstd]") {
+    using namespace Common::Compression;
+    const auto payload = MakePayload(3 * 1024 * 1024);
+
+    const auto compress_at = [&payload](int level) {
+        std::vector<u8> compressed;
+        ZSTDOutputStreamBuf out{[&](std::span<const u8> chunk) {
+                                    compressed.insert(compressed.end(), chunk.begin(), chunk.end());
+                                    return true;
+                                },
+                                level};
+        {
+            std::ostream stream{&out};
+            stream.write(reinterpret_cast<const char*>(payload.data()), payload.size());
+            REQUIRE(stream.good());
+        }
+        REQUIRE(out.Finish());
+        REQUIRE_FALSE(out.Failed());
+        return compressed;
+    };
+
+    const auto round_trip = [&payload](const std::vector<u8>& compressed) {
+        ZSTDInputStreamBuf in{ChunkedSource(compressed)};
+        std::istream stream{&in};
+        const auto out = ReadAll(stream);
+        REQUIRE_FALSE(in.Failed());
+        REQUIRE(out == payload);
+    };
+
+    // Savestates are written at Core::SaveStateCompressionLevel and read by a decoder that is
+    // never told which level produced the frame. States written by older builds used Zstandard's
+    // default of 3, so every one of these has to read back through the same input streambuf for
+    // an existing state to survive a build that changed the level.
+    SECTION("a frame reads back identically whatever level wrote it") {
+        for (const int level : {3, 1, -1, -3}) {
+            INFO("compression level " << level);
+            round_trip(compress_at(level));
+        }
+    }
+
+    SECTION("the level that savestates now use is not the one older builds wrote") {
+        // Guards the claim above from becoming vacuous if the level is ever set back to 3
+        STATIC_REQUIRE(DefaultCompressionLevel == 3);
+        const auto legacy = compress_at(DefaultCompressionLevel);
+        const auto current = compress_at(1);
+        REQUIRE(legacy != current);
+        round_trip(legacy);
+        round_trip(current);
+    }
+
+    SECTION("both levels still compress") {
+        // Deliberately not asserting that level 1 produces a larger frame than level 3. It does
+        // on real savestate data (14.5 MB against 13.6 MB for Animal Crossing New Leaf) but that
+        // is a property of the data, not of Zstandard: on this synthetic payload level 1 comes
+        // out 0.5% *smaller*, and an assertion the other way would only be encoding an accident.
+        REQUIRE(compress_at(3).size() < payload.size());
+        REQUIRE(compress_at(1).size() < payload.size());
+    }
+}

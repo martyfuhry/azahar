@@ -24,12 +24,25 @@ namespace Common::Compression {
  * the frame. The frame carries no content size, so read it back with ZSTDInputStreamBuf rather
  * than DecompressDataZSTD.
  */
+/**
+ * Zstandard's own default level (ZSTD_CLEVEL_DEFAULT), restated here so that <zstd.h> does not
+ * have to be included by everything that names it. Callers with a speed/ratio preference of their
+ * own should pass a level rather than relying on this.
+ */
+constexpr int DefaultCompressionLevel = 3;
+
 class ZSTDOutputStreamBuf final : public std::streambuf {
 public:
     /// Receives each compressed chunk; returning false aborts the stream
     using Sink = std::function<bool(std::span<const u8>)>;
 
-    explicit ZSTDOutputStreamBuf(Sink sink);
+    /**
+     * `level` is a Zstandard compression level. It affects only how this frame is produced --
+     * the level is recorded in the frame's own parameters, so ZSTDInputStreamBuf reads any level
+     * back without being told which one was used, and a stream written by an older build at a
+     * different level stays readable.
+     */
+    explicit ZSTDOutputStreamBuf(Sink sink, int level = DefaultCompressionLevel);
     ~ZSTDOutputStreamBuf() override;
 
     ZSTDOutputStreamBuf(const ZSTDOutputStreamBuf&) = delete;

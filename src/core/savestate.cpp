@@ -318,6 +318,29 @@ static CSTHeader MakeHeader(u64 title_id) {
 }
 
 /**
+ * Zstandard level for savestates. Level 1 rather than Zstandard's default of 3, because the
+ * compressor is most of what the emulation thread waits for and this is the good part of that
+ * curve. Measured on Animal Crossing New Leaf, which serializes ~314 MB down to a 13-14 MB state:
+ *
+ *     level    total     zstd      state size
+ *     3        345.8 ms  221.7 ms  13.6 MB
+ *     1        256.1 ms  135.6 ms  14.5 MB
+ *     -1       241.3 ms  118.0 ms  16.8 MB
+ *     -3       232.0 ms  108.8 ms  18.3 MB
+ *     -9       222.3 ms   95.4 ms  21.9 MB
+ *
+ * 26% off the whole save for 7% more file. The negative levels buy little further and cost real
+ * ratio, which is not free here: the autosave ring keeps up to AutoSaveGenerationCount states per
+ * title alongside eleven user slots, on a handheld.
+ *
+ * Nothing needs to know this level to read a state back. Zstandard records the frame parameters
+ * in the frame, so ZSTDInputStreamBuf decodes any level without being told, and states written by
+ * builds that used level 3 keep loading unchanged -- there is no format break here and no
+ * migration.
+ */
+constexpr int SaveStateCompressionLevel = 1;
+
+/**
  * Serializes the system through a Zstandard stream into `sink`, chunk by chunk. A New 3DS
  * state serializes to a few hundred MiB, so it is never held in memory as a whole: the
  * frontend that autosaves in the background on a memory-tight phone would otherwise provoke
@@ -325,7 +348,7 @@ static CSTHeader MakeHeader(u64 title_id) {
  */
 static void SerializeCompressed(const System& system,
                                 Common::Compression::ZSTDOutputStreamBuf::Sink sink) {
-    Common::Compression::ZSTDOutputStreamBuf compressor{std::move(sink)};
+    Common::Compression::ZSTDOutputStreamBuf compressor{std::move(sink), SaveStateCompressionLevel};
     {
         std::ostream stream{&compressor};
         oarchive oa{stream};

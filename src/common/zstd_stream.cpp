@@ -8,10 +8,11 @@
 
 namespace Common::Compression {
 
-ZSTDOutputStreamBuf::ZSTDOutputStreamBuf(Sink sink_)
+ZSTDOutputStreamBuf::ZSTDOutputStreamBuf(Sink sink_, int level)
     : sink{std::move(sink_)}, cctx{ZSTD_createCCtx()}, in_buffer(ZSTD_CStreamInSize()),
       out_buffer(ZSTD_CStreamOutSize()) {
-    ZSTD_CCtx_setParameter(cctx, ZSTD_c_compressionLevel, ZSTD_CLEVEL_DEFAULT);
+    static_assert(DefaultCompressionLevel == ZSTD_CLEVEL_DEFAULT);
+    ZSTD_CCtx_setParameter(cctx, ZSTD_c_compressionLevel, level);
     // Four bytes per frame that let the reader tell a corrupt state from a valid one
     ZSTD_CCtx_setParameter(cctx, ZSTD_c_checksumFlag, 1);
     setp(in_buffer.data(), in_buffer.data() + in_buffer.size());
