@@ -126,9 +126,17 @@ object SettingsRepairProfile {
     )
 
     /**
-     * Tier 3 — genuine taste. Listed so that the pass can be shown never to touch them and so
-     * that the boundary is written down somewhere other than a document, but the pass skips every
-     * entry in this tier unconditionally. These belong to the first-run profile in `ThorDefaults`.
+     * Tier 3 — genuine taste. These belong to the first-run profile in `ThorDefaults`, and the
+     * pass skips every entry in this tier unconditionally.
+     *
+     * **Listing a key here does not protect it and omitting one does not expose it.** The pass
+     * only ever looks at keys in [entries], so everything in the settings screen that is not in
+     * tier 1 or tier 2 is already untouched by construction. This list exists so that the
+     * boundary is written down in the code as well as in the audit, and so that the immunity can
+     * be tested rather than merely asserted. It is representative of the audit's tier 3 rather
+     * than exhaustive of it: the float-valued entries (`volume`) and the whole-block entries (the
+     * stereoscopy, Cardboard and custom-layout coordinates) are omitted because naming them adds
+     * nothing that their absence from tiers 1 and 2 does not already guarantee.
      *
      * The hesitations are recorded in the audit: `use_vsync` is right off on Android but somebody
      * with visible tearing genuinely wants it on; `cpu_clock_percentage` has broken values but
