@@ -143,35 +143,39 @@ object SettingsRepair {
             )
         }
 
-        // The record goes down after the settings, never before: a kill between the two costs a
-        // key its provenance, which cedes it, and never causes a value to be overwritten.
-        ForkProfileStore.save(
-            ForkProfileRecord(
-                lastAppliedVersionCode = BuildConfig.VERSION_CODE,
-                lastAppliedVersionName = BuildConfig.VERSION_NAME,
-                optOut = record?.optOut ?: false,
-                owned = outcome.owned,
-                ceded = outcome.ceded.toList(),
-                lastRepair = if (written.isEmpty()) {
-                    record?.lastRepair
-                } else {
-                    ForkProfileRepair(
-                        at = timestamp(),
-                        fromVersionCode = record?.lastAppliedVersionCode ?: 0,
-                        changed = written.map {
-                            ForkProfileChange(
-                                key = it.key,
-                                from = it.from,
-                                to = it.to,
-                                tier = it.tier.number,
-                                rule = it.rule.name,
-                                why = it.why
-                            )
-                        }
-                    )
-                }
-            )
+        val updated = ForkProfileRecord(
+            lastAppliedVersionCode = BuildConfig.VERSION_CODE,
+            lastAppliedVersionName = BuildConfig.VERSION_NAME,
+            optOut = record?.optOut ?: false,
+            owned = outcome.owned,
+            ceded = outcome.ceded.toList(),
+            lastRepair = if (written.isEmpty()) {
+                record?.lastRepair
+            } else {
+                ForkProfileRepair(
+                    at = timestamp(),
+                    fromVersionCode = record?.lastAppliedVersionCode ?: 0,
+                    changed = written.map {
+                        ForkProfileChange(
+                            key = it.key,
+                            from = it.from,
+                            to = it.to,
+                            tier = it.tier.number,
+                            rule = it.rule.name,
+                            why = it.why
+                        )
+                    }
+                )
+            }
         )
+        // The steady state is a pass that found nothing and has nothing new to say, which is
+        // almost every launch. Writing an identical record there would cost two storage round
+        // trips on the boot path for no information.
+        if (updated != record) {
+            // The record goes down after the settings, never before: a kill between the two costs
+            // a key its provenance, which cedes it, and never overwrites a value.
+            ForkProfileStore.save(updated)
+        }
 
         pendingNotice = written
         if (written.isEmpty()) {
