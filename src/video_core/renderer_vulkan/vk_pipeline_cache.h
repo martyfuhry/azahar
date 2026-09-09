@@ -176,6 +176,10 @@ private:
     DescriptorUpdateQueue& update_queue;
 
     Pica::Shader::Profile profile{};
+    // Declaration order is load-bearing: every GraphicsPipeline holds a reference to this cache
+    // and is owned by a ShaderDiskCache in disk_caches below, so reverse-order destruction has to
+    // destroy the pipelines first. Moving this member after disk_caches is a use-after-free that
+    // no compiler diagnostic and no test will catch.
     vk::UniquePipelineCache driver_pipeline_cache;
     /// Serialized size of driver_pipeline_cache when it was last loaded or written to disk
     std::size_t saved_driver_cache_size{0};
@@ -195,6 +199,7 @@ private:
     Shader trivial_vertex_shader;
 
     u64 current_program_id{0};
+    // Must stay declared after driver_pipeline_cache and pipeline_layout - see the note there.
     std::vector<std::shared_ptr<ShaderDiskCache>> disk_caches;
     std::shared_ptr<ShaderDiskCache> curr_disk_cache{};
 };

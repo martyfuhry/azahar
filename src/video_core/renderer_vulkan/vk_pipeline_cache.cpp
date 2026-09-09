@@ -145,11 +145,24 @@ void PipelineCache::BuildLayout() {
 }
 
 PipelineCache::~PipelineCache() {
+    // No scheduler.Finish() here, unlike QuiesceForDiskCacheTeardown(): ~RendererVulkan already
+    // runs Finish(), WaitPresent() and device.waitIdle() in its body, and destroys the rasterizer
+    // that owns us afterwards. The GPU is idle and the Scheduler drained before we run, so there
+    // is nothing left in flight that could still hold a pipeline. The asymmetry with the two
+    // disk-cache teardown paths is deliberate, not an oversight.
     WaitForWorkers();
     SaveDriverPipelineDiskCache();
 }
 
 void PipelineCache::WaitForWorkers() {
+    // This is only a barrier because the emulation thread is the sole producer for both pools.
+    // ThreadWorker::WaitForRequests() waits for the queue to drain and returns; it does not stop
+    // new work being queued behind it. Every producer - GraphicsPipeline::TryBuild via
+    // BindPipeline and InitPLCache, and ShaderDiskCache::Use*Shader - runs on the emulation
+    // thread, and so does every caller of this function, so nothing can queue while we wait.
+    // Neither pool queues into the other or into itself. If a producer is ever added on another
+    // thread, this stops being a barrier and the use-after-free it guards against comes back.
+    //
     // Shaders first: a pipeline worker parks in Shader::WaitDone() until the shader worker that
     // owns its modules is finished, so draining the pipeline pool first would only wait longer.
     shader_workers.WaitForRequests();
@@ -179,8 +192,14 @@ void PipelineCache::SwitchCache(u64 title_id, const std::atomic_bool& stop_loadi
         return;
     }
 
-    // Make sure we have a valid pipeline cache before switching
+    // Make sure we have a valid pipeline cache before switching. This assignment destroys
+    // nothing (the handle is empty by the test above) and both values a worker could observe -
+    // VK_NULL_HANDLE and the new cache - are legal pipelineCache arguments, so this is not the
+    // rc2 use-after-free. It is still a write to a handle workers read, and it is the only one
+    // outside WaitForWorkers()' rule; draining here keeps that rule without exception, so that
+    // relaxing the test below can never quietly reintroduce the abort. The path is cold.
     if (!driver_pipeline_cache) {
+        WaitForWorkers();
         vk::PipelineCacheCreateInfo cache_info{};
         try {
             driver_pipeline_cache = instance.GetDevice().createPipelineCacheUnique(cache_info);
