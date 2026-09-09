@@ -59,3 +59,13 @@ Every APK that will be installed on the Fold5 is built with `-PversionCodeOverri
   before tapping it; fixed bottom buttons at y~2127 are safe.
 - **scrcpy contaminates measurements** (it adds a virtual display and an encoder). Record
   whether it was running; never compare numbers taken with it against numbers taken without.
+- **Never trust a screenshot you did not prove is fresh.** `screencap` can fail while an
+  earlier PNG is still on the device, and `adb pull` will happily return that stale image.
+  An agent nearly reported a renderer fix as verified across four configurations using a
+  photograph of a different app taken before the test started; the tell was a clock inside
+  the image reading 45 minutes earlier, and byte-identical measurements across every config.
+  Write each capture to a unique remote path, delete it first, check it exists and is over
+  1 KB on the device, do not swallow `screencap`'s stderr, delete the local file before
+  pulling, and emit a sentinel rather than a number if any of that fails. Identical values
+  across supposedly different configurations mean the harness is broken, not that the fix
+  worked.
