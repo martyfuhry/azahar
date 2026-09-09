@@ -779,12 +779,6 @@ void System::RegisterImageInterface(std::shared_ptr<Frontend::ImageInterface> im
 }
 
 void System::Shutdown(bool is_deserializing) {
-    // A savestate write finishes on a worker thread that holds no reference to this System, but
-    // it does still hold a file. Let it land before the session goes away, so a shutdown right
-    // after a save does not lose the save it just took -- and so nothing is mid-rename when a
-    // deserialize rebuilds the machine underneath it. Any failure it reports is logged rather
-    // than thrown, because a shutdown has nowhere to put an exception.
-    FlushSaveStateWrite();
 
     // Shutdown emulation session
     is_powered_on = false;

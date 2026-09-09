@@ -10,8 +10,6 @@ add_library(citra_common STATIC EXCLUDE_FROM_ALL
     arch.h
     archives.h
     assert.h
-    bounded_byte_pipe.cpp
-    bounded_byte_pipe.h
     atomic_ops.h
     detached_tasks.cpp
     detached_tasks.h
