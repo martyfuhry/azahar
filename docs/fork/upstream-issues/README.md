@@ -41,17 +41,23 @@ reads the third report differently.
 | 9 | `07-custom-textures-never-freed.md` | new issue | new |
 | 10 | `11-comment-1308-2118-custom-textures-vulkan.md` | comment | #2118 (file after 9, so it can point at it) |
 | 11 | `05-vulkan-swapchain-lifetime-bugs.md` | new issue, or drop | new, or a comment on #1693 |
-| 12 | `12-android-accurate-multiplication-hardcoded-off.md` | new issue | new; then a pointer on #1445, and #1292 / #440 become duplicate candidates |
+| 12 | `12-android-accurate-multiplication-hardcoded-off.md` | new issue | new; cites #1445 / #1292 / #440 / #1136 as context only, explains none of them |
 
 Number 12 is appended rather than slotted in, to avoid renumbering, but it does not belong at the
 end on merit and it is **independent of every draft above it** — different subsystem, no shared
-code, no shared reproduction. Its core claim (the Android config reader hardcodes a default that
-contradicts `settings.h`, so Android and desktop disagree from one tree) is the cheapest thing in
-this directory to verify — two lines of source and one log line — and among the hardest to argue
-with, so by the ordering rule above it would sit near the front. What holds it back is its second
-half: the hypothesis that this is why Pokémon X/Y render wrong colours on Android, which is
-unverified and needs a device session. **File the two halves separately if the Pokémon test has
-not been done** — the divergence stands alone.
+code, no shared reproduction. Its claim (the Android config reader hardcodes a default that
+contradicts `settings.h`, so Android and desktop disagree from one tree with nothing visible to
+the user) is the cheapest thing in this directory to verify — two lines of source and one log
+line — and among the hardest to argue with, so by the ordering rule above it would sit near the
+front.
+
+It is also the one draft that has already been **wrong once**, and the correction is worth
+carrying: an earlier version claimed this divergence explained #1445's wrong-colour reports in
+Pokémon X/Y. Reading that thread's comments in full killed it — the symptom shows up on desktop
+where the setting already defaults on, survives being enabled on Android + OpenGL, and tracks the
+renderer more than the setting. The draft now scopes itself to the divergence and says explicitly
+that it explains nothing else. **Do not let the Pokémon framing back in**; it was the only part
+that could have got the report dismissed.
 
 Number 11 is last on purpose. It is three real code defects that I never managed to turn into a
 crash on demand, and a report with no reproduction is a weaker thing to put in front of a
@@ -121,16 +127,16 @@ lid-cycle soak with a short dwell for the semaphore double-destroy, and repeated
 the `UNREACHABLE()` on a device-lost acquire. Re-confirm every line number in `vk_swapchain.cpp` on
 the day of filing — that file moved recently.
 
-**12 — accurate multiplication hardcoded off on Android.** Two halves with very different costs.
-The **divergence** needs almost nothing: confirm the two lines exist in upstream `master` at a
-named commit, then show an untouched Android config logging
-`Renderer_ShadersAccurateMul: false` beside an untouched desktop config logging `true`, both on
-official release-page builds. That is filable on its own. The **Pokémon hypothesis** needs a real
-session: load Pokémon X, reach the starter selection, photograph Froakie with the setting off and
-on. If the colours do not change, cut that section entirely and file the divergence alone — it is
-the claim that would sink the report if it is wrong. Also worth measuring what accurate
-multiplication actually costs on Adreno, because if it is expensive the report should argue for
-*making the divergence visible* rather than for changing the default.
+**12 — accurate multiplication hardcoded off on Android.** Cheap, and now narrowly scoped.
+Confirm the two lines exist in upstream `master` at a named commit, then show an untouched
+Android config logging `Renderer_ShadersAccurateMul: false` beside an untouched desktop config
+logging `true`, both on official release-page builds. That is the entire report. Also worth
+measuring what accurate multiplication costs on Adreno first: if it is expensive, lead with
+*"make the divergence visible"* rather than *"change the default"* — the draft argues that is the
+better report regardless, since it keeps Android's behaviour and still fixes the invisibility.
+**No Pokémon claim.** That hypothesis was investigated and the thread's own comments argue
+against it; anything I observe playing Pokémon X belongs in a comment on #1445, not in this
+issue.
 
 ---
 
