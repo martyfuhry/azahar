@@ -276,6 +276,10 @@ class EmulationFragment :
                 binding.surfaceInputOverlay.isClickable = true
                 binding.surfaceInputOverlay.isFocusable = true
                 binding.surfaceInputOverlay.isFocusableInTouchMode = true
+                // DrawerLayout stops offering the menu's rows to focus search once the drawer is
+                // closed, but it does not take focus away from the row that had it, so a d-pad
+                // press would still land on the hidden menu. Hand focus back to the game.
+                giveFocusToGame(drawerView)
             }
 
             override fun onDrawerStateChanged(newState: Int) {
@@ -528,11 +532,35 @@ class EmulationFragment :
 
     fun isDrawerOpen(): Boolean = binding.drawerLayout.isOpen
 
+    /**
+     * Moves focus off [drawerView] and onto the view the game is played through, so that a
+     * closed drawer never keeps the focus a gamepad navigates with.
+     */
+    private fun giveFocusToGame(drawerView: View) {
+        drawerView.clearFocus()
+        if (!binding.surfaceInputOverlay.requestFocus()) {
+            // The overlay is not focusable yet (it is invisible until emulation starts); leaving
+            // nothing focused is still better than leaving the menu focused.
+            binding.drawerLayout.clearFocus()
+        }
+    }
+
     private fun togglePause() {
         if (emulationState.isPaused) {
             emulationState.unpause()
         } else {
             emulationState.pause()
+        }
+    }
+
+    // DrawerLayout saves whether it was open and reopens itself here. A session Android killed
+    // and restored boots the title from scratch behind that drawer, with the menu holding the
+    // focus a gamepad navigates with, which a cold boot never does. Put it back the way a cold
+    // boot leaves it; the drawer is locked closed until emulation reports it is ready anyway.
+    override fun onViewStateRestored(savedInstanceState: Bundle?) {
+        super.onViewStateRestored(savedInstanceState)
+        if (!emulationViewModel.emulationStarted.value && binding.drawerLayout.isOpen) {
+            binding.drawerLayout.closeDrawer(binding.inGameMenu, false)
         }
     }
 
