@@ -3,6 +3,7 @@
 // Refer to the license.txt file included.
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <codecvt>
 #include <thread>
@@ -936,6 +937,29 @@ void Java_org_citra_citra_1emu_NativeLibrary_swapScreens([[maybe_unused]] JNIEnv
     }
     InputManager::screen_rotation = rotation;
     Camera::NDK::g_rotation = rotation;
+}
+
+// The Kotlin settings enums restate every default as a literal of their own, which is how
+// Android's shaders_accurate_mul default came to disagree with settings.h without anybody
+// noticing. There is no safe literal to restate for a default that is platform-conditional, so
+// Kotlin asks for the real one instead. Only the booleans whose default is (or has been) decided
+// per platform are listed: for the rest a literal cannot drift, because there is only one value.
+jboolean Java_org_citra_citra_1emu_NativeLibrary_getDefaultBoolean(JNIEnv* env,
+                                                                   [[maybe_unused]] jobject obj,
+                                                                   jstring j_key) {
+    const std::string key = GetJString(env, j_key);
+    const std::array<const Settings::SwitchableSetting<bool>*, 3> platform_decided = {
+        &Settings::values.async_shader_compilation,
+        &Settings::values.shaders_accurate_mul,
+        &Settings::values.use_vsync,
+    };
+    for (const auto* setting : platform_decided) {
+        if (setting->GetLabel() == key) {
+            return static_cast<jboolean>(setting->GetDefault());
+        }
+    }
+    LOG_ERROR(Frontend, "No shared default is published for boolean setting {}", key);
+    return JNI_FALSE;
 }
 
 jboolean Java_org_citra_citra_1emu_NativeLibrary_areKeysAvailable([[maybe_unused]] JNIEnv* env,

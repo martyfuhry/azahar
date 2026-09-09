@@ -4,8 +4,15 @@
 
 package org.citra.citra_emu.features.settings.model
 
+import org.citra.citra_emu.NativeLibrary
 import org.citra.citra_emu.features.settings.SettingKeys
 
+/**
+ * Every entry names its own default. Where a default is decided per platform there is no literal
+ * that can be restated safely -- Android's `shaders_accurate_mul` default contradicted
+ * `settings.h` for years, and nothing in the UI, the config file or the log said so -- so those
+ * entries ask the shared code for its value through [NativeLibrary.getDefaultBoolean] instead.
+ */
 enum class BooleanSetting(
     override val key: String,
     override val section: String,
@@ -13,7 +20,11 @@ enum class BooleanSetting(
 ) : AbstractBooleanSetting {
     EXPAND_TO_CUTOUT_AREA(SettingKeys.expand_to_cutout_area(), Settings.SECTION_LAYOUT, false),
     SPIRV_SHADER_GEN(SettingKeys.spirv_shader_gen(), Settings.SECTION_RENDERER, true),
-    ASYNC_SHADERS(SettingKeys.async_shader_compilation(), Settings.SECTION_RENDERER, true),
+    ASYNC_SHADERS(
+        SettingKeys.async_shader_compilation(),
+        Settings.SECTION_RENDERER,
+        NativeLibrary.getDefaultBoolean(SettingKeys.async_shader_compilation())
+    ),
     DISABLE_SPIRV_OPTIMIZER(SettingKeys.disable_spirv_optimizer(), Settings.SECTION_RENDERER, true),
     PLUGIN_LOADER(SettingKeys.plugin_loader(), Settings.SECTION_SYSTEM, false),
     ALLOW_PLUGIN_LOADER(SettingKeys.allow_plugin_loader(), Settings.SECTION_SYSTEM, true),
@@ -80,7 +91,11 @@ enum class BooleanSetting(
     LLE_APPLETS(SettingKeys.lle_applets(), Settings.SECTION_SYSTEM, false),
     NEW_3DS(SettingKeys.is_new_3ds(), Settings.SECTION_SYSTEM, true),
     LINEAR_FILTERING(SettingKeys.filter_mode(), Settings.SECTION_RENDERER, true),
-    SHADERS_ACCURATE_MUL(SettingKeys.shaders_accurate_mul(), Settings.SECTION_RENDERER, false),
+    SHADERS_ACCURATE_MUL(
+        SettingKeys.shaders_accurate_mul(),
+        Settings.SECTION_RENDERER,
+        NativeLibrary.getDefaultBoolean(SettingKeys.shaders_accurate_mul())
+    ),
     DISK_SHADER_CACHE(SettingKeys.use_disk_shader_cache(), Settings.SECTION_RENDERER, true),
     DUMP_TEXTURES(SettingKeys.dump_textures(), Settings.SECTION_UTILITY, false),
     CUSTOM_TEXTURES(SettingKeys.custom_textures(), Settings.SECTION_UTILITY, false),
@@ -96,7 +111,11 @@ enum class BooleanSetting(
     CPU_JIT(SettingKeys.use_cpu_jit(), Settings.SECTION_CORE, true),
     HW_SHADER(SettingKeys.use_hw_shader(), Settings.SECTION_RENDERER, true),
     SHADER_JIT(SettingKeys.use_shader_jit(), Settings.SECTION_RENDERER, true),
-    VSYNC(SettingKeys.use_vsync(), Settings.SECTION_RENDERER, false),
+    VSYNC(
+        SettingKeys.use_vsync(),
+        Settings.SECTION_RENDERER,
+        NativeLibrary.getDefaultBoolean(SettingKeys.use_vsync())
+    ),
     USE_SKIP_DUPLICATE_FRAMES(
         SettingKeys.use_skip_duplicate_frames(),
         Settings.SECTION_RENDERER,
