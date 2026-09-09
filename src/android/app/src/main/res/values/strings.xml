@@ -243,6 +243,14 @@
     <string name="autosave_build_mismatch">Skipped autosave from a different Azahar version (%1$s)</string>
     <string name="autosave_resume_stale_title">Older autosave found</string>
     <string name="autosave_resume_stale_message">A state was saved automatically on %1$s, from before your last session. Anything you saved in the application since then would be undone by loading it. Load it anyway, or keep playing from the application\'s own save data?</string>
+    <string name="autosave_interval">Autosave while playing</string>
+    <string name="autosave_interval_description">Also saves a state at this interval while an application is running, so a sudden shutdown costs at most this much play. Emulation pauses briefly for each one. Needs \"Save state on exit\" to be on.</string>
+    <string name="autosave_interval_off">Off</string>
+    <string name="autosave_interval_1">Every minute</string>
+    <string name="autosave_interval_3">Every 3 minutes</string>
+    <string name="autosave_interval_5">Every 5 minutes</string>
+    <string name="autosave_interval_10">Every 10 minutes</string>
+    <string name="autosave_interval_15">Every 15 minutes</string>
     <string name="console_id">Console ID</string>
     <string name="regenerate_console_id">Regenerate Console ID</string>
     <string name="regenerate_console_id_description">This will replace your current virtual 3DS console ID with a new one. Your current virtual 3DS console ID will not be recoverable. This might have unexpected effects inside applications. This might fail if you use an outdated config save. Continue?</string>

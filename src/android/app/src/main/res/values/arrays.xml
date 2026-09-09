@@ -23,6 +23,25 @@
         <item>2</item>
     </integer-array>
 
+    <string-array name="autoSaveIntervalNames" translatable="true">
+        <item>@string/autosave_interval_off</item>
+        <item>@string/autosave_interval_1</item>
+        <item>@string/autosave_interval_3</item>
+        <item>@string/autosave_interval_5</item>
+        <item>@string/autosave_interval_10</item>
+        <item>@string/autosave_interval_15</item>
+    </string-array>
+
+    <!-- Settings::AutoSaveInterval is the interval in minutes, so these are the minute counts -->
+    <integer-array name="autoSaveIntervalValues" translatable="false">
+        <item>0</item>
+        <item>1</item>
+        <item>3</item>
+        <item>5</item>
+        <item>10</item>
+        <item>15</item>
+    </integer-array>
+
     <string-array name="landscapeLayouts">
         <item>@string/emulation_screen_layout_largescreen</item>
         <item>@string/emulation_screen_layout_single</item>

@@ -741,6 +741,17 @@ class SettingsFragmentPresenter(private val fragmentView: SettingsFragmentView) 
                     IntSetting.AUTOSAVE_MODE.defaultValue
                 )
             )
+            add(
+                SingleChoiceSetting(
+                    IntSetting.AUTOSAVE_INTERVAL,
+                    R.string.autosave_interval,
+                    R.string.autosave_interval_description,
+                    R.array.autoSaveIntervalNames,
+                    R.array.autoSaveIntervalValues,
+                    IntSetting.AUTOSAVE_INTERVAL.key,
+                    IntSetting.AUTOSAVE_INTERVAL.defaultValue
+                )
+            )
         }
     }
 

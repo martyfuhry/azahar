@@ -438,6 +438,51 @@ static void FlushAutoSave(Core::System& system) {
 }
 
 /**
+ * Interval between autosaves taken while the title is running, zero when the user turned them
+ * off. Also zero when autosave itself is off, so that the two settings do not have to be read
+ * together anywhere else.
+ */
+static std::chrono::steady_clock::duration PeriodicAutoSaveInterval() {
+    if (!AutoSaveEnabled()) {
+        return {};
+    }
+    return std::chrono::minutes(static_cast<u32>(Settings::values.autosave_interval.GetValue()));
+}
+
+/**
+ * Queues an autosave once the periodic interval has elapsed, for FlushAutoSave() to carry out on
+ * this same thread a moment later. Uses the ordinary request counter rather than a second path,
+ * so a periodic save and one the activity asked for on its way to the background collapse into
+ * one write instead of two. Unlike the UI thread it needs no paused_mutex around the increment:
+ * the thread bumping the counter is the thread that services it, so there is no parked reader to
+ * miss the wake-up, and the counter is atomic against the UI thread's own increments.
+ *
+ * `deadline` is carried by the caller and is reset by RestartPeriodicAutoSave() whenever the
+ * emulation thread starts or resumes, so time spent paused (during which the frontend has
+ * already written an autosave of its own) never counts towards the next one.
+ */
+static void RequestPeriodicAutoSaveIfDue(std::chrono::steady_clock::time_point& deadline) {
+    const auto interval = PeriodicAutoSaveInterval();
+    const auto now = std::chrono::steady_clock::now();
+    if (interval == std::chrono::steady_clock::duration::zero()) {
+        // Keep the deadline in step with the clock rather than letting it fall behind, so that a
+        // player who turns the setting on mid-session gets one save now and the cadence after it,
+        // instead of every missed interval at once
+        deadline = now;
+        return;
+    }
+    if (now < deadline) {
+        return;
+    }
+    deadline = now + interval;
+    ++autosave_requested;
+}
+
+static void RestartPeriodicAutoSave(std::chrono::steady_clock::time_point& deadline) {
+    deadline = std::chrono::steady_clock::now() + PeriodicAutoSaveInterval();
+}
+
+/**
  * Periodic performance summary for the log, so `logcat -s CitraNative` carries what the overlay
  * shows without the overlay being on. Reads and resets the same counters as the overlay, so the
  * two share windows when both are enabled; every figure is a rate or a per-frame mean, so a
@@ -679,9 +724,16 @@ static Core::System::ResultStatus RunCitra(const std::string& filepath) {
 
     PerfLogger perf_logger;
 
+    // Started here rather than at declaration so that neither the boot nor the resume load above
+    // counts towards the first periodic autosave; the state the resume came from is current, and
+    // saving it straight back would only cost the player a hitch on the loading screen.
+    std::chrono::steady_clock::time_point next_periodic_autosave{};
+    RestartPeriodicAutoSave(next_periodic_autosave);
+
     // Start running emulation
     while (!stop_run) {
         if (!pause_emulation) {
+            RequestPeriodicAutoSaveIfDue(next_periodic_autosave);
             FlushAutoSave(system);
             const auto result = system.RunLoop();
             if (result == Core::System::ResultStatus::Success) {
@@ -741,6 +793,10 @@ static Core::System::ResultStatus RunCitra(const std::string& filepath) {
             // are really about to run again
             if (!pause_emulation && !stop_run) {
                 SetAudioOutputPaused(false);
+                // The pause wrote an autosave of its own, so the next periodic one is a whole
+                // interval away; paused wall time must not count towards it either, or a session
+                // resumed after a night in the background would hitch on its first frame back
+                RestartPeriodicAutoSave(next_periodic_autosave);
                 if (Settings::values.perf_log_interval.GetValue() != 0) {
                     perf_logger.Restart(system);
                 }
