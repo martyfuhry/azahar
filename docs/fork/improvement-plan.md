@@ -1,3 +1,36 @@
+# What this fork is for
+
+In Marty's words, 2026-09-09:
+
+> "this should be built for idiots like me who don't care to understand supersampling
+> techniques we just want to play majoras mask, have it locked framerate and look awesome,
+> and not fucking crash and lose my game"
+
+That is the specification. Three things, in priority order:
+
+1. **Don't crash, and never lose a save.** A lost session is the only failure that actually
+   costs the player something irreplaceable. Everything about lifecycle, autosave, crash
+   recovery and surface handling serves this, and it outranks any amount of speed.
+2. **Locked framerate, looks great, no thought required.** Not "configurable to look great" —
+   correct out of the box, on this hardware, without the player learning what a texture
+   filter is. Opinionated defaults beat exposed options.
+3. **Just play the game.** No setup ritual, no mapping controllers by hand, no folder wizard
+   twice, no reading a settings guide to find out that a debug toggle has been costing
+   performance for a year.
+
+**How to use this when ranking work.** An item earns its place by serving one of those three,
+for a player who will never read a settings screen. It does not earn its place by being
+measurable. A change that moves a benchmark but that no player would notice is not a win here;
+a change that removes a decision the player should never have had to make is.
+
+The counter-example is on the record: hardware shaders had been disabled in Marty's config for
+an unknown length of time, costing a large and immediately noticeable amount of performance.
+No measurement pass in this project found it. He found it by asking why a setting was not on
+by default. The lesson is that the settings surface is a defect in its own right, not a
+feature to be documented.
+
+---
+
 # Azahar fork (thor/main) — improvement plan
 
 **Revision 2, 2026-09-09.** Tree: `thor/main` @ `553e5deb2`. The first revision of this plan was
