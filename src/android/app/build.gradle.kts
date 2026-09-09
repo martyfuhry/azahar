@@ -225,6 +225,10 @@ dependencies {
     implementation("io.coil-kt:coil:2.7.0")
     implementation("org.ini4j:ini4j:0.5.4")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.2")
+
+    // The settings repair pass decides whether to overwrite somebody's configuration, so the rule
+    // that makes that decision is a pure function and is tested on the JVM rather than on a device.
+    testImplementation("junit:junit:4.13.2")
 }
 
 // Download Vulkan Validation Layers from the KhronosGroup GitHub.
