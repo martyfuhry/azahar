@@ -244,9 +244,19 @@ change it back.
   setting stops matching. Choosing a preset again puts everything back.
 - If nothing has ever been chosen, the picker reports whichever preset the current configuration
   already matches rather than calling a stock setup "Custom".
-- The device-awareness is not theoretical: on the Fold5 used for §2 the cover panel is 904x2316,
-  so `min(2316 / 400, 904 / 240)` = 3.77 and "Best looking" there is **3x**, not the Thor's 4x.
-  Same code, different panel, different answer.
+- The device-awareness is not theoretical, and was confirmed on the device. On the Fold5 used
+  for §2 the cover panel is 904x2316, so `min(2316 / 400, 904 / 240)` = 3.77: the picker there
+  offers "Best looking 3x / Balanced 2x / Battery saver 1x", not the Thor's 4/3/2. Same code,
+  different panel, different answer. Choosing it logged
+
+  ```
+  [GraphicsPresets] Applied BEST_LOOKING: resolution_factor=3, texture_filter=0,
+  texture_sampling=0, async_shader_compilation=true, use_disk_shader_cache=true,
+  shaders_accurate_mul=true, filter_mode=true
+  ```
+
+  and the row's value changed from Custom (which is what it correctly reported for a
+  hand-edited configuration) to "Best looking (recommended)".
 - The row is not runtime-runnable: it owns two settings the core only reads at boot (async shader
   compilation, accurate multiplication), so it greys out during emulation exactly as those rows
   below it already do.
