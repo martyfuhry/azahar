@@ -67,6 +67,15 @@ enum class GraphicsPreset(
  *   emulator also still has open crash reports against the scaled-texture path.
  * - `texture_sampling` stays **Game controlled**. Overriding it makes some games look wrong and
  *   fixes nothing.
+ * - `use_hw_shader` stays **on** in every preset, Battery saver included. It is not a
+ *   quality/speed trade: with it off, `pica_core.cpp` refuses to set `accelerate_draw`, so the
+ *   3DS' vertex shaders are interpreted on the CPU and the whole geometry pipeline is emulated
+ *   in software instead of being handed to the GPU. That is slower *and* hotter *and* worse for
+ *   battery, so there is no tier that wants it off. It is listed here because it is not
+ *   theoretical: Marty's Thor was found with `use_hw_shader = false` written into `config.ini`
+ *   alongside `resolution_factor = 4`, which is the worst combination available — see
+ *   `docs/fork/baselines/2026-09-09-thor-diagnostics.md` §7. Nothing in this fork writes that
+ *   value, so it was set by hand; a preset is now how it gets put back.
  * - `async_shader_compilation` and `use_disk_shader_cache` stay **on**: they are the difference
  *   between a smooth first hour and a stutter every time a new effect appears, and they cost
  *   nothing but a moment of pop-in.
@@ -145,6 +154,7 @@ object GraphicsPresets {
         IntSetting.RESOLUTION_FACTOR to resolutionFor(preset),
         IntSetting.TEXTURE_FILTER to TEXTURE_FILTER_NONE,
         IntSetting.TEXTURE_SAMPLING to TEXTURE_SAMPLING_GAME_CONTROLLED,
+        BooleanSetting.HW_SHADER to true,
         BooleanSetting.ASYNC_SHADERS to true,
         BooleanSetting.DISK_SHADER_CACHE to true,
         BooleanSetting.SHADERS_ACCURATE_MUL to true,
