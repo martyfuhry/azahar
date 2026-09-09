@@ -12,6 +12,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.SharedPreferences
 import android.content.res.Configuration
+import android.hardware.input.InputManager
 import android.net.Uri
 import android.os.BatteryManager
 import android.os.Build
@@ -96,6 +97,10 @@ class EmulationFragment :
 
     private lateinit var emulationState: EmulationState
     private var perfStatsUpdater: Runnable? = null
+
+    // Overlay visibility the controller default last resolved to, so a burst of input-device
+    // callbacks does not reload the overlay bitmaps for nothing.
+    private var overlayShownForControllers: Boolean? = null
 
     private val emulationActivity: EmulationActivity
         get() = (requireActivity() as EmulationActivity)
@@ -230,6 +235,9 @@ class EmulationFragment :
         }
 
         binding.surfaceEmulation.holder.addCallback(this)
+        // The overlay resolved its own visibility as it was inflated; record it so the first
+        // input-device callback only reloads the controls if the answer actually changed.
+        overlayShownForControllers = EmulationMenuSettings.showOverlay
         binding.doneControlConfig.setOnClickListener {
             binding.doneControlConfig.visibility = View.GONE
             binding.surfaceInputOverlay.setIsInEditMode(false)
@@ -528,10 +536,43 @@ class EmulationFragment :
         }
     }
 
+    /**
+     * Keeps the touch overlay's default in step with the hardware: with a physical pad
+     * attached the overlay is off by default and it comes back when the pad goes away. Once
+     * the user has toggled the overlay themselves their choice stands and this does nothing.
+     */
+    private val inputDeviceListener = object : InputManager.InputDeviceListener {
+        override fun onInputDeviceAdded(deviceId: Int) = refreshOverlayForControllers()
+
+        override fun onInputDeviceRemoved(deviceId: Int) = refreshOverlayForControllers()
+
+        override fun onInputDeviceChanged(deviceId: Int) = refreshOverlayForControllers()
+    }
+
+    private fun refreshOverlayForControllers() {
+        if (_binding == null || EmulationMenuSettings.isShowOverlayUserSet) {
+            return
+        }
+        val showOverlay = EmulationMenuSettings.showOverlay
+        if (showOverlay == overlayShownForControllers) {
+            return
+        }
+        overlayShownForControllers = showOverlay
+        Log.info(
+            "[EmulationFragment] Physical gamepad " +
+                (if (showOverlay) "gone" else "detected") +
+                "; touch overlay ${if (showOverlay) "shown" else "hidden"} by default"
+        )
+        binding.surfaceInputOverlay.refreshControls()
+    }
+
     override fun onResume() {
         super.onResume()
         Choreographer.getInstance().postFrameCallback(this)
         resumePerfStatsUpdates()
+        (requireContext().getSystemService(Context.INPUT_SERVICE) as InputManager)
+            .registerInputDeviceListener(inputDeviceListener, null)
+        refreshOverlayForControllers()
         if (NativeLibrary.isRunning()) {
             emulationState.unpause()
 
@@ -570,6 +611,8 @@ class EmulationFragment :
             emulationState.requestAutoSave()
         }
         Choreographer.getInstance().removeFrameCallback(this)
+        (requireContext().getSystemService(Context.INPUT_SERVICE) as InputManager)
+            .unregisterInputDeviceListener(inputDeviceListener)
         // The overlay timer would otherwise keep waking the UI thread (and crossing JNI) once a
         // second for as long as the game sits in the background
         suspendPerfStatsUpdates()

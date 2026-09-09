@@ -88,6 +88,15 @@ object ControllerAutoMapper {
         return true
     }
 
+    /**
+     * Whether a physical gamepad is attached right now. Used for defaults that only make sense
+     * without one, such as the on-screen touch overlay.
+     */
+    fun isPhysicalGamepadConnected(): Boolean =
+        InputDevice.getDeviceIds().any { id ->
+            InputDevice.getDevice(id)?.let { isPhysicalGamepad(it) } == true
+        }
+
     private fun isPhysicalGamepad(device: InputDevice): Boolean {
         if (device.isVirtual) return false
         val sources = device.sources

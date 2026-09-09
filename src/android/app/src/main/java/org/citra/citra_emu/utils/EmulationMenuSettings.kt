@@ -10,6 +10,8 @@ import org.citra.citra_emu.CitraApplication
 import org.citra.citra_emu.overlay.ButtonSlidingMode
 
 object EmulationMenuSettings {
+    private const val KEY_SHOW_OVERLAY = "EmulationMenuSettings_ShowOverlay"
+
     private val preferences =
         PreferenceManager.getDefaultSharedPreferences(CitraApplication.appContext)
 
@@ -52,13 +54,30 @@ object EmulationMenuSettings {
                 .putBoolean("EmulationMenuSettings_SwapScreens", value)
                 .apply()
         }
+
+    /**
+     * Whether the on-screen controls are drawn.
+     *
+     * Until the user picks a side, the answer follows the hardware: with a physical gamepad
+     * attached (a handheld's built-in pad included) the overlay starts hidden, and it comes
+     * back if the pad goes away. Assigning to this property records an explicit choice, which
+     * then wins over the hardware for good - see [isShowOverlayUserSet].
+     */
     var showOverlay: Boolean
-        get() = preferences.getBoolean("EmulationMenuSettings_ShowOverlay", true)
+        get() = preferences.getBoolean(
+            KEY_SHOW_OVERLAY,
+            !ControllerAutoMapper.isPhysicalGamepadConnected()
+        )
         set(value) {
             preferences.edit()
-                .putBoolean("EmulationMenuSettings_ShowOverlay", value)
+                .putBoolean(KEY_SHOW_OVERLAY, value)
                 .apply()
         }
+
+    /** True once the user has toggled the overlay themselves, so the default no longer applies. */
+    val isShowOverlayUserSet: Boolean
+        get() = preferences.contains(KEY_SHOW_OVERLAY)
+
     var drawerLockMode: Int
         get() = preferences.getInt(
             "EmulationMenuSettings_DrawerLockMode",

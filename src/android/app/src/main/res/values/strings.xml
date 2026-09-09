@@ -442,6 +442,13 @@
     <string name="reset_all_settings">Reset All Settings?</string>
     <string name="reset_all_settings_description">All advanced settings will be reset to their default configuration. This can not be undone.</string>
     <string name="settings_reset">Settings reset</string>
+
+    <!-- AYN Thor defaults profile -->
+    <string name="thor_defaults_header">AYN Thor</string>
+    <string name="thor_defaults">Apply Thor defaults</string>
+    <string name="thor_defaults_description">Dual screen on both panels, Vulkan at 4x, disk shader cache, autosave always</string>
+    <string name="thor_defaults_confirmation">This overwrites the layout, graphics and autosave settings with the AYN Thor profile: the top screen on the top panel, the bottom screen on the bottom panel, Vulkan at 4x resolution, no texture filter, disk shader cache and asynchronous shaders on, and autosave set to Always. Controls and everything else are left alone.</string>
+    <string name="thor_defaults_applied">Thor defaults applied (%1$d settings changed)</string>
     <string name="select_rtc_date">Select RTC date</string>
     <string name="select_rtc_time">Select RTC time</string>
     <string name="reset_setting_confirmation">Do you want to reset this setting back to its default value?</string>
