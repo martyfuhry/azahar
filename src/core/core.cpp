@@ -10,6 +10,7 @@
 #include "audio_core/lle/lle.h"
 #include "common/arch.h"
 #include "common/logging/log.h"
+#include "common/memory_detect.h"
 #include "common/scope_exit.h"
 #include "common/settings.h"
 #include "core/arm/arm_interface.h"
@@ -326,6 +327,20 @@ System::ResultStatus System::SingleStep() {
 /// How long compiled pipelines may stay only in memory before RunLoop() writes them to disk
 constexpr auto pipeline_cache_flush_interval = std::chrono::minutes{5};
 
+void System::TrimMemoryIfRequested() {
+    if (!memory_trim_requested.exchange(false)) {
+        return;
+    }
+    LOG_INFO(Core, "Releasing cached resources on request of the frontend");
+    // Both of these run on the emulation thread between RunLoop() calls, where the CPU is idle
+    // and nothing else can be flushing surfaces: the same place a savestate is serialized and
+    // the pipeline cache is written, never alongside them.
+    if (gpu) {
+        gpu->TrimCaches();
+    }
+    Common::ReleaseFreeHostMemory();
+}
+
 void System::FlushPipelineCacheIfRequested() {
     const auto now = std::chrono::steady_clock::now();
     if (!pipeline_cache_flush_requested.exchange(false) &&
@@ -347,6 +362,8 @@ System::ResultStatus System::Load(Frontend::EmuWindow& emu_window, const std::st
     // flush is due one interval after boot
     pipeline_cache_flush_requested = false;
     last_pipeline_cache_flush = std::chrono::steady_clock::now();
+    // A trim requested by the session that just ended has nothing left to release
+    memory_trim_requested = false;
     FileUtil::SetCurrentRomPath(filepath);
     if (early_app_loader) {
         app_loader = std::move(early_app_loader);

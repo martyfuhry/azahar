@@ -60,6 +60,10 @@ public:
     /// Flushes and invalidates all memory in the rasterizer cache and removes any leftover state.
     void ClearAll(bool flush);
 
+    /// Releases the cached GPU resources that can be rebuilt on demand. See
+    /// VideoCore::RasterizerInterface::TrimCaches: emulation thread only, live scheduler.
+    void TrimCaches();
+
     /// Executes the provided GSP command.
     void Execute(const Service::GSP::Command& command);
 

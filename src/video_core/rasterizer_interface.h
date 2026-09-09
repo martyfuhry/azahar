@@ -56,6 +56,12 @@ public:
     /// Removes as much state as possible from the rasterizer in preparation for a save/load state
     virtual void ClearAll(bool flush) = 0;
 
+    /// Releases the cached GPU resources that can be rebuilt on demand (the surface cache), for
+    /// a frontend reporting memory pressure. Dirty surfaces are flushed back to guest memory
+    /// first, so this needs a live scheduler and must run on the emulation thread. Everything
+    /// dropped is rebuilt the next time it is drawn, at the cost of one hitch.
+    virtual void TrimCaches() {}
+
     /// Attempt to use a faster method to perform a display transfer with is_texture_copy = 0
     virtual bool AccelerateDisplayTransfer(const Pica::DisplayTransferConfig&) {
         return false;

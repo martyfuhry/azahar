@@ -1,4 +1,4 @@
-// Copyright 2020 yuzu Emulator Project
+// Copyright 2020-2026 yuzu Emulator Project
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
@@ -14,6 +14,11 @@
 #elif defined(__linux__)
 #include <sys/sysinfo.h>
 #endif
+#endif
+
+#if defined(__linux__)
+// bionic and glibc both hand free pages back through this header, with different calls
+#include <malloc.h>
 #endif
 
 #include "common/memory_detect.h"
@@ -70,6 +75,16 @@ u64 GetPageSize() {
     return static_cast<u64>(info.dwPageSize);
 #else
     return static_cast<u64>(sysconf(_SC_PAGESIZE));
+#endif
+}
+
+void ReleaseFreeHostMemory() {
+#if defined(M_PURGE)
+    // bionic: returns the free pages of every arena to the kernel and empties the thread caches
+    mallopt(M_PURGE, 0);
+#elif defined(__GLIBC__)
+    // glibc: trims the top of the main arena and madvises away the free pages of the others
+    malloc_trim(0);
 #endif
 }
 

@@ -184,6 +184,33 @@ public:
     void FlushPipelineCacheIfRequested();
 
     /**
+     * Request that the memory holding what the emulator can rebuild on demand (the rasterizer's
+     * cached surfaces, and whatever the C allocator is sitting on) be released. Frontends call
+     * this when the operating system reports memory pressure, which on Android is right after
+     * the app is backgrounded. Carried out by TrimMemoryIfRequested() on the emulation thread;
+     * a frontend that parks that thread has to wake it. Safe to call from any thread.
+     */
+    void RequestMemoryTrim() {
+        memory_trim_requested = true;
+    }
+
+    /// Whether a RequestMemoryTrim() is still waiting to be carried out. Lets a frontend whose
+    /// emulation thread is parked notice that it has to wake up.
+    [[nodiscard]] bool IsMemoryTrimRequested() const {
+        return memory_trim_requested;
+    }
+
+    /**
+     * Carry out a pending RequestMemoryTrim() now, and nothing when none is pending. Must run on
+     * the emulation thread while the GPU scheduler is still alive, because dropping the cached
+     * surfaces flushes the dirty ones back into guest memory first; a frontend calls it just
+     * before it parks that thread, never after. Always consumes the request, so a parked thread
+     * woken by one goes back to sleep. The surfaces are re-uploaded when they are next drawn,
+     * which costs one hitch on resume.
+     */
+    void TrimMemoryIfRequested();
+
+    /**
      * Whether a Signal::Save/Signal::Load is still waiting to be picked up by RunLoop(), or a
      * picked-up one has not yet been carried out (or abandoned after its timeout). Lets a
      * frontend that is about to park the emulation thread keep pumping RunLoop() until a
@@ -558,6 +585,9 @@ private:
     std::atomic_bool pipeline_cache_flush_requested{};
     /// When the pipeline cache was last flushed (or the title booted); drives the periodic flush
     std::chrono::steady_clock::time_point last_pipeline_cache_flush{};
+
+    /// Set by RequestMemoryTrim(), consumed by TrimMemoryIfRequested()
+    std::atomic_bool memory_trim_requested{};
 
     SaveStateStatus save_state_status = SaveStateStatus::NONE;
     SaveStateStatus save_state_request_status = SaveStateStatus::NONE;

@@ -30,6 +30,7 @@
 #include "common/file_util.h"
 #include "common/logging/backend.h"
 #include "common/logging/log.h"
+#include "common/memory_detect.h"
 #include "common/microprofile.h"
 #include "common/play_time_manager.h"
 #include "common/scm_rev.h"
@@ -606,10 +607,17 @@ static Core::System::ResultStatus RunCitra(const std::string& filepath) {
             // Same for the pipeline cache flush pauseEmulation() requested: the autosave's own
             // RunLoop() normally services it, but nothing does when autosave is off
             system.FlushPipelineCacheIfRequested();
+            // Last, because it is the only one of the three that can be redone for free: give
+            // the cached surfaces and the free heap pages back to Android, which asks for them
+            // through onTrimMemory() once the app is in the background. It has to happen here,
+            // with the scheduler still running, and after the autosave, whose serialization
+            // would only have to flush the same surfaces again.
+            system.TrimMemoryIfRequested();
 
             std::unique_lock pause_lock{paused_mutex};
             running_cv.wait(pause_lock, [] {
-                return !pause_emulation || stop_run || autosave_completed != autosave_requested;
+                return !pause_emulation || stop_run || autosave_completed != autosave_requested ||
+                       Core::System::GetInstance().IsMemoryTrimRequested();
             });
             window->PollEvents();
             pause_lock.unlock();
@@ -1158,6 +1166,24 @@ void Java_org_citra_citra_1emu_NativeLibrary_pauseEmulation([[maybe_unused]] JNI
     if (handler) {
         handler->DisableSensors();
     }
+}
+
+void Java_org_citra_citra_1emu_NativeLibrary_trimMemory([[maybe_unused]] JNIEnv* env,
+                                                        [[maybe_unused]] jobject obj) {
+    auto& system = Core::System::GetInstance();
+    if (stop_run || !system.IsPoweredOn()) {
+        // Nothing is running that could hold cached surfaces, and no emulation thread would
+        // ever pick the request up; the heap is still worth handing back from here
+        Common::ReleaseFreeHostMemory();
+        return;
+    }
+    {
+        // Under paused_mutex so an emulation thread parked on running_cv re-checks its wait
+        // predicate instead of sleeping through the request
+        std::scoped_lock lock{paused_mutex};
+        system.RequestMemoryTrim();
+    }
+    running_cv.notify_all();
 }
 
 jboolean Java_org_citra_citra_1emu_NativeLibrary_requestAutoSave([[maybe_unused]] JNIEnv* env,
