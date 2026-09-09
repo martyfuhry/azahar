@@ -17,6 +17,7 @@ import org.citra.citra_emu.utils.GraphicsUtil
 import org.citra.citra_emu.utils.Log
 import org.citra.citra_emu.utils.MemoryUtil
 import org.citra.citra_emu.utils.PermissionsHandler
+import org.citra.citra_emu.utils.SettingsRepair
 import org.citra.citra_emu.utils.ThorDefaults
 
 class CitraApplication : Application() {
@@ -63,6 +64,9 @@ class CitraApplication : Application() {
         // enable_secondary_display when the activity loads settings, so the profile has to be
         // on disk by then for the bottom panel to come up on the first boot.
         ThorDefaults.applyOnFirstRun()
+        // Then, on every launch and not just the first: put back anything that should never have
+        // been wrong, and record what was left alone. See [SettingsRepair].
+        SettingsRepair.run()
         createNotificationChannel()
         NativeLibrary.playTimeManagerInit()
     }

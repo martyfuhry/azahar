@@ -30,6 +30,13 @@ import org.citra.citra_emu.features.settings.model.Settings
  * keys that config.ini does not already carry a value for, so an existing configuration is
  * never rewritten. [apply] with `force` set is the "Thor defaults" settings action, which is
  * an explicit request to overwrite.
+ *
+ * Running once is right for what is left here, which is **taste**: the screen layout, the
+ * resolution, autosave. Running once was badly wrong for the settings that have a right answer,
+ * because it meant an opinion formed after a device's first launch could never reach it — which
+ * is how `use_hw_shader = false` survived for months. Those settings belong to
+ * [SettingsRepair], which runs on every launch and knows the difference between a value it wrote
+ * and a value somebody chose.
  */
 object ThorDefaults {
     private const val PREF_APPLIED = "thor_defaults_applied"
@@ -155,17 +162,33 @@ object ThorDefaults {
         // before the first activity is not recoverable from the device.
         try {
             apply(Settings(), force = false)
+            // Only now, and only here. The marker means "the first-run pass has happened", so it
+            // is set when the pass completes and not when it merely starts: it used to be written
+            // unconditionally from inside apply(), which meant a pass that threw part-way through
+            // could never be retried and a config the pass never actually saw was recorded as
+            // done. What the marker still guards is taste, which is set once by design; the
+            // settings that have a right answer are [SettingsRepair]'s job on every launch.
+            markApplied()
         } catch (e: Exception) {
             Log.error("[ThorDefaults] Could not apply the first-run profile: ${e.message}")
         }
     }
 
+    /** Records that the first-run pass has happened, so taste is never written over again. */
+    fun markApplied() {
+        PreferenceManager.getDefaultSharedPreferences(CitraApplication.appContext)
+            .edit()
+            .putBoolean(PREF_APPLIED, true)
+            .apply()
+    }
+
     /**
      * Writes the profile to config.ini and returns the number of settings changed.
      *
-     * With [force] off, settings config.ini already carries a value for are left alone and the
-     * "applied" marker is set whatever happens, so the pass runs at most once. With [force] on
-     * (the settings action) every value in the profile is written.
+     * With [force] off, settings config.ini already carries a value for are left alone. With
+     * [force] on (the settings action) every value in the profile is written. Marking the pass as
+     * done is the caller's job — see [applyOnFirstRun] and [markApplied] — so that a pass which
+     * never ran is never recorded as having run.
      */
     fun apply(settings: Settings, force: Boolean): Int {
         val applied = SettingsProfile.write(settings, profile(), force)
@@ -175,11 +198,6 @@ object ThorDefaults {
         if (GraphicsPresets.matches(GraphicsPreset.BEST_LOOKING)) {
             GraphicsPresets.active = GraphicsPreset.BEST_LOOKING
         }
-
-        PreferenceManager.getDefaultSharedPreferences(CitraApplication.appContext)
-            .edit()
-            .putBoolean(PREF_APPLIED, true)
-            .apply()
 
         val how = if (force) "on request" else "on first run"
         val changed = if (applied.isEmpty()) "nothing to change" else applied.joinToString(", ")
