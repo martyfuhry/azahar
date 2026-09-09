@@ -315,6 +315,7 @@ void Config::ReadValues() {
     Settings::values.record_frame_times =
         android_config->GetBoolean("Debugging", Settings::HKeys::record_frame_times.c_str(), false);
     ReadSetting("Debugging", Settings::values.perf_log_interval);
+    ReadSetting("Debugging", Settings::values.log_savestate_breakdown);
     ReadSetting("Debugging", Settings::values.renderer_debug);
     ReadSetting("Debugging", Settings::values.pica_debugging);
     ReadSetting("Debugging", Settings::values.use_gdbstub);

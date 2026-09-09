@@ -148,6 +148,7 @@ foreach(KEY IN ITEMS
     "udp_pad_index"
     "record_frame_times"
     "perf_log_interval"
+    "log_savestate_breakdown"
     "language" # FIXME: DUPLICATE KEY (libretro equivalent: language_value)
     "web_api_url"
     "network_token"

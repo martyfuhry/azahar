@@ -168,6 +168,7 @@ void LogSettings() {
     log_setting("System_AutoSaveMode", static_cast<u32>(values.autosave_mode.GetValue()));
     log_setting("System_AutoSaveInterval", static_cast<u32>(values.autosave_interval.GetValue()));
     log_setting("Debugging_PerfLogInterval", values.perf_log_interval.GetValue());
+    log_setting("Debugging_LogSaveStateBreakdown", values.log_savestate_breakdown.GetValue());
     log_setting("Debugging_DelayStartForLLEModules", values.delay_start_for_lle_modules.GetValue());
     log_setting("Debugging_UseGdbstub", values.use_gdbstub.GetValue());
     log_setting("Debugging_GdbstubPort", values.gdbstub_port.GetValue());

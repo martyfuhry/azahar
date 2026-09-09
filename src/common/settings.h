@@ -771,6 +771,16 @@ struct Values {
     bool record_frame_times;
     /// Seconds between PerfStats summaries written to the log; 0 disables them
     Setting<u32> perf_log_interval{0, Keys::perf_log_interval};
+    /**
+     * Logs where the time in a savestate write actually went -- serialize, compress, file write --
+     * along with the uncompressed volume that went through the compressor. Off by default; it
+     * costs two clock reads per compressor call, around 120 us against a ~300 ms save.
+     *
+     * It exists because the cost model for savestates was wrong twice, in opposite directions,
+     * and both times the argument was settled by modelling rather than measuring. The output is
+     * one greppable line per save (search SAVEBREAKDOWN) so a device log can settle it instead.
+     */
+    Setting<bool> log_savestate_breakdown{false, Keys::log_savestate_breakdown};
     std::unordered_map<std::string, bool> lle_modules;
     Setting<bool> delay_start_for_lle_modules{true, Keys::delay_start_for_lle_modules};
     Setting<bool> use_gdbstub{false, Keys::use_gdbstub};

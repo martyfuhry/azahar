@@ -571,6 +571,11 @@ static const char* android_config_default_file_content = (BOOST_HANA_STRING(R"(
 # seconds apart while emulation runs. 0 (default): Off
 )") DECLARE_KEY(perf_log_interval) BOOST_HANA_STRING(R"(
 
+# Log where the time in a savestate write went: serialize, compress, file write, and the
+# uncompressed volume fed to the compressor. One line per save, tagged SAVEBREAKDOWN.
+# 0 (default): Off, 1: On
+)") DECLARE_KEY(log_savestate_breakdown) BOOST_HANA_STRING(R"(
+
 # Whether to enable additional debugging information during emulation
 # 0 (default): Off, 1: On
 )") DECLARE_KEY(renderer_debug) BOOST_HANA_STRING(R"(

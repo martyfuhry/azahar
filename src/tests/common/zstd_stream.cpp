@@ -197,3 +197,55 @@ TEST_CASE("Common::Compression::ZSTDOutputStreamBuf compression levels", "[commo
         REQUIRE(compress_at(1).size() < payload.size());
     }
 }
+
+TEST_CASE("Common::Compression::ZSTDOutputStreamBuf::MeasureInto", "[common][zstd]") {
+    using namespace Common::Compression;
+    const auto payload = MakePayload(3 * 1024 * 1024);
+
+    ZSTDOutputStreamBuf::Stats stats;
+    std::size_t sink_bytes = 0;
+    ZSTDOutputStreamBuf out{[&](std::span<const u8> chunk) {
+        sink_bytes += chunk.size();
+        return true;
+    }};
+    out.MeasureInto(&stats);
+    {
+        std::ostream stream{&out};
+        stream.write(reinterpret_cast<const char*>(payload.data()), payload.size());
+        REQUIRE(stream.good());
+    }
+    REQUIRE(out.Finish());
+
+    SECTION("counts every byte in and every byte out") {
+        // bytes_in is what the caller wrote, which is the figure the breakdown reports as the
+        // uncompressed volume; bytes_out has to agree with what the sink actually received
+        REQUIRE(stats.bytes_in == payload.size());
+        REQUIRE(stats.bytes_out == sink_bytes);
+        REQUIRE(stats.bytes_out < stats.bytes_in);
+    }
+
+    SECTION("attributes time to the compressor and the sink separately") {
+        REQUIRE(stats.compress_ns > 0);
+        // The sink here only adds to a counter, so it must be a small fraction of the compressor
+        REQUIRE(stats.sink_ns < stats.compress_ns);
+    }
+}
+
+TEST_CASE("Common::Compression::ZSTDOutputStreamBuf without MeasureInto", "[common][zstd]") {
+    using namespace Common::Compression;
+    const auto payload = MakePayload(1024 * 1024);
+
+    // The default path must not touch the Stats machinery at all; this is the shape every save
+    // takes unless log_savestate_breakdown is on
+    ZSTDOutputStreamBuf::Stats stats;
+    ZSTDOutputStreamBuf out{[](std::span<const u8>) { return true; }};
+    {
+        std::ostream stream{&out};
+        stream.write(reinterpret_cast<const char*>(payload.data()), payload.size());
+    }
+    REQUIRE(out.Finish());
+    REQUIRE(stats.bytes_in == 0);
+    REQUIRE(stats.bytes_out == 0);
+    REQUIRE(stats.compress_ns == 0);
+    REQUIRE(stats.sink_ns == 0);
+}

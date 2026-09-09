@@ -5,6 +5,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <span>
 #include <streambuf>
@@ -56,6 +57,22 @@ public:
         return failed;
     }
 
+    /// Where a stream's time and bytes went, for callers that want to report it
+    struct Stats {
+        std::size_t bytes_in = 0;      ///< uncompressed bytes handed to the compressor
+        std::size_t bytes_out = 0;     ///< compressed bytes handed to the sink
+        std::uint64_t compress_ns = 0; ///< time inside the compressor
+        std::uint64_t sink_ns = 0;     ///< time inside the sink
+    };
+
+    /**
+     * Accumulates Stats while the stream runs. Off by default because it costs two clock reads
+     * per compressor call; the caller turns it on before writing anything.
+     */
+    void MeasureInto(Stats* into) {
+        stats = into;
+    }
+
 protected:
     int_type overflow(int_type ch) override;
     int sync() override;
@@ -70,6 +87,7 @@ private:
     std::vector<u8> out_buffer;
     bool failed = false;
     bool finished = false;
+    Stats* stats = nullptr;
 };
 
 /**

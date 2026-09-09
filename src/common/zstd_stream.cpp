@@ -2,6 +2,7 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <chrono>
 #include <zstd.h>
 #include "common/logging/log.h"
 #include "common/zstd_stream.h"
@@ -26,20 +27,45 @@ bool ZSTDOutputStreamBuf::Compress(int directive) {
     if (failed) {
         return false;
     }
+    // Only read when stats are being collected, so the default path takes no clock at all
+    const auto now = [] { return std::chrono::steady_clock::now(); };
+    const auto elapsed_ns = [](auto from) {
+        return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                              std::chrono::steady_clock::now() - from)
+                                              .count());
+    };
+
     ZSTD_inBuffer input{in_buffer.data(), static_cast<std::size_t>(pptr() - pbase()), 0};
+    if (stats) {
+        stats->bytes_in += input.size;
+    }
     const auto mode = static_cast<ZSTD_EndDirective>(directive);
     bool done = false;
     while (!done) {
         ZSTD_outBuffer output{out_buffer.data(), out_buffer.size(), 0};
+        const auto compress_begin = stats ? now() : std::chrono::steady_clock::time_point{};
         const std::size_t remaining = ZSTD_compressStream2(cctx, &output, &input, mode);
+        if (stats) {
+            stats->compress_ns += elapsed_ns(compress_begin);
+        }
         if (ZSTD_isError(remaining)) {
             LOG_ERROR(Common, "Error compressing ZSTD stream: {}", ZSTD_getErrorName(remaining));
             failed = true;
             return false;
         }
-        if (output.pos > 0 && !sink(std::span<const u8>{out_buffer.data(), output.pos})) {
-            failed = true;
-            return false;
+        if (output.pos > 0) {
+            if (stats) {
+                stats->bytes_out += output.pos;
+            }
+            const auto sink_begin = stats ? now() : std::chrono::steady_clock::time_point{};
+            const bool sink_ok = sink(std::span<const u8>{out_buffer.data(), output.pos});
+            if (stats) {
+                stats->sink_ns += elapsed_ns(sink_begin);
+            }
+            if (!sink_ok) {
+                failed = true;
+                return false;
+            }
         }
         // Plain input is done once consumed; a flush or end also has to drain the compressor
         done = mode == ZSTD_e_continue ? input.pos == input.size : remaining == 0;

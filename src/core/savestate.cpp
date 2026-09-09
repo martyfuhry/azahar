@@ -15,6 +15,7 @@
 #include "common/file_util.h"
 #include "common/logging/log.h"
 #include "common/scm_rev.h"
+#include "common/settings.h"
 #include "common/swap.h"
 #include "common/zstd_stream.h"
 #include "core/core.h"
@@ -349,6 +350,16 @@ constexpr int SaveStateCompressionLevel = 1;
 static void SerializeCompressed(const System& system,
                                 Common::Compression::ZSTDOutputStreamBuf::Sink sink) {
     Common::Compression::ZSTDOutputStreamBuf compressor{std::move(sink), SaveStateCompressionLevel};
+
+    // Settings::values.log_savestate_breakdown exists because this cost was modelled wrongly
+    // twice, in opposite directions, and settled both times by argument rather than measurement.
+    Common::Compression::ZSTDOutputStreamBuf::Stats stats;
+    const bool measuring = Settings::values.log_savestate_breakdown.GetValue();
+    const auto begin = std::chrono::steady_clock::now();
+    if (measuring) {
+        compressor.MeasureInto(&stats);
+    }
+
     {
         std::ostream stream{&compressor};
         oarchive oa{stream};
@@ -359,6 +370,25 @@ static void SerializeCompressed(const System& system,
     }
     if (!compressor.Finish()) {
         throw std::runtime_error("Could not compress the save state");
+    }
+
+    if (measuring) {
+        const double total_ms =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin)
+                .count();
+        const double compress_ms = static_cast<double>(stats.compress_ns) / 1.0e6;
+        const double write_ms = static_cast<double>(stats.sink_ns) / 1.0e6;
+        // One greppable line per save. "serialize" is what is left once the compressor and the
+        // sink are subtracted, i.e. the boost graph walk -- the part that has to stay on the
+        // emulation thread whatever else moves off it.
+        LOG_INFO(Core,
+                 "SAVEBREAKDOWN total {:.1f} ms | serialize {:.1f} | compress {:.1f} | write "
+                 "{:.1f} | in {} B | out {} B | ratio {:.1f}",
+                 total_ms, total_ms - compress_ms - write_ms, compress_ms, write_ms, stats.bytes_in,
+                 stats.bytes_out,
+                 stats.bytes_out > 0
+                     ? static_cast<double>(stats.bytes_in) / static_cast<double>(stats.bytes_out)
+                     : 0.0);
     }
 }
 
