@@ -511,6 +511,13 @@ static const char* android_config_default_file_content = (BOOST_HANA_STRING(R"(
 # 0 (default): Off, 1: Ask before resuming, 2: Always resume
 )") DECLARE_KEY(autosave_mode) BOOST_HANA_STRING(R"(
 
+# How often a state is saved automatically while an application is running, in minutes. Only has
+# an effect when autosave_mode is not Off. Serializing a state stalls emulation for as long as it
+# takes, so a shorter interval bounds how much play a sudden kill can take with it at the cost of
+# a more frequent hitch.
+# 0: Off, 1, 3, 5 (default), 10, 15
+)") DECLARE_KEY(autosave_interval) BOOST_HANA_STRING(R"(
+
 [Camera]
 # Which camera engine to use for the right outer camera
 # blank: a dummy camera that always returns black image

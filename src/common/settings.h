@@ -46,6 +46,35 @@ enum class AutoSaveMode : u32 {
     Always = 2, ///< Resume from a fresh autosave without asking
 };
 
+/**
+ * How often the frontend writes an autosave while the title is running, on top of the ones it
+ * writes when emulation is backgrounded or shut down. A hard kill in the middle of play costs
+ * everything since the last autosave, and a session that is never backgrounded never had one.
+ *
+ * The value is the interval in minutes, so the ini and the Android picker carry a number a human
+ * can read, and Off is a real choice rather than a sentinel that has to be explained. Serializing
+ * a state stalls the emulation thread for its whole duration, so the interval is the knob that
+ * trades a visible hitch against how much play a kill can take with it.
+ *
+ * The default is five minutes because that stall is not small. Measured with azahar-bench on the
+ * development host, median of three runs each: Animal Crossing New Leaf 346 ms, Majora's Mask 3D
+ * 362 ms, Hyrule Warriors Legends 292 ms. That is a freeze of the picture, not a dropped frame,
+ * and a phone core is slower than that host. Five minutes keeps it near a third of a percent of
+ * wall time; one minute would be nearly two percent and one visible freeze every minute, which
+ * trades a lost-save complaint for a stutter complaint. The ring and the stale offer are what
+ * actually stop a save being lost, so this interval does not have to be aggressive to be worth
+ * having. The real fix for the stall is to get compression and the file write off this thread,
+ * which is a larger change than this setting.
+ */
+enum class AutoSaveInterval : u32 {
+    Off = 0,
+    OneMinute = 1,
+    ThreeMinutes = 3,
+    FiveMinutes = 5,
+    TenMinutes = 10,
+    FifteenMinutes = 15,
+};
+
 /** Defines the layout option for desktop and mobile landscape */
 enum class LayoutOption : u32 { // Shouldn't these have set numbers to prevent last two from
                                 // shifting? -OS
@@ -521,6 +550,8 @@ struct Values {
     Setting<u16> steps_per_hour{0, Keys::steps_per_hour};
     Setting<bool> apply_region_free_patch{true, Keys::apply_region_free_patch};
     Setting<AutoSaveMode> autosave_mode{AutoSaveMode::Off, Keys::autosave_mode};
+    Setting<AutoSaveInterval> autosave_interval{AutoSaveInterval::FiveMinutes,
+                                                Keys::autosave_interval};
 
     // Renderer
     // clang-format off

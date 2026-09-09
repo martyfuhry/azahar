@@ -29,6 +29,7 @@ foreach(KEY IN ITEMS
     "steps_per_hour"
     "apply_region_free_patch"
     "autosave_mode"
+    "autosave_interval"
     "graphics_api"
     "physical_device"
     "use_gles"
