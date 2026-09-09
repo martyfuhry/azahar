@@ -260,7 +260,7 @@ this release only by documentation commits.
 
 - **One run per metric.** No repeats. Treat any difference under about 5 % as noise unless a
   mechanism is named for it.
-- **Taken on a Galaxy Z Fold5** (SM-F946U1, Android 16), folded on its 2316x904 cover panel,
+- **Taken on a Galaxy Z Fold5** — and on Adreno driver **512.676.1**, where the Thor is on **512.676.53** (SM-F946U1, Android 16), folded on its 2316x904 cover panel,
   running Animal Crossing: New Leaf at `resolution_factor = 3`. Same SoC as the Thor. **Not
   the Thor**: different panel, different thermals, different lid. Nothing below has been
   measured on the target hardware.
@@ -366,7 +366,11 @@ resumed it, so the scenes differ. Only the frame and perf rows are a resolution 
 ## Known issues
 
 **(a) Changing the texture filter while a game is running can still crash.** Roughly one
-attempt in seven takes the process down. It is a driver-level race: changing the filter
+attempt in seven takes the process down **on the Fold5**; no rate has been measured on the
+Thor, and because the fault is inside the Adreno driver the rate need not transfer. That it
+*happens* on the Thor is confirmed: the rc1 crash of 2026-09-08 21:11:37 was this bug, and its
+recovered stack matches the Fold5 signature exactly — same `VulkanWorker` thread, same
+`vkCmdEndRenderPass`, same `0xb4` fault address — on the Thor's newer driver. It is a driver-level race: changing the filter
 rescales every texture mid-frame, and surfaces are destroyed while draws referencing them are
 still in flight. **Workaround: set the texture filter from the main menu before launching a
 game.** That path has never crashed in testing. A fix is in progress on
@@ -401,8 +405,9 @@ or measure a build without the foreground service.
 Neither has been seen in the field and neither has been reproduced on a device. They are
 listed because they are known, not because they are expected.
 
-**Also still true from rc1**, unchanged here: no numbers have ever been taken on the Thor
-itself; the sleep-key/deep-suspend soak is still not automated (nothing in either measurement
+**Also still true from rc1**, unchanged here: no *performance* numbers have ever been taken on
+the Thor itself (its identifiers, OS level, Vulkan driver, memory, displays and crash history
+were read read-only on 2026-09-09 — running the emulator on it is still owed); the sleep-key/deep-suspend soak is still not automated (nothing in either measurement
 pass sent `KEYCODE_SLEEP` or `POWER`, both phones were awake throughout), so everything about
 real suspend is reasoned from code; and an autosave request that arrives while the emulation
 thread is blocked is not served until it unblocks, with the UI thread giving up after 4 s.
@@ -425,11 +430,17 @@ Notes:
   the shader cache all survive. Do **not** uninstall: a full uninstall drops the private
   SharedPreferences holding the SAF grant and the user-directory path, which drops you into
   the first-run wizard even though the data is still there.
-- **Savestates from another build are rejected by design.** A `.cst` file carries the git
-  revision it was written by, and loading one from a different build fails with a build
-  mismatch rather than corrupting a session; the autosave from a previous build is skipped
-  with a toast rather than loaded. So **save in-game before you install this**, and do not
-  count on an existing savestate or autosave surviving the update.
+- **Savestates DO survive between our release candidates.** ~~Savestates from another build
+  are rejected by design.~~ This bullet was wrong when it shipped, and Marty disproved it in
+  the field on 2026-09-09 by loading an rc1 autosave in rc2, in Animal Crossing, with no
+  trouble. `ValidateSaveState` (`src/core/savestate.cpp:78-91`) has three outcomes, not two:
+  a differing git revision with a matching `Common::g_build_version` is `RevisionMismatch`,
+  which still loads, and only a differing build version is the fatal `BuildMismatch`. rc1 and
+  rc2 share an upstream base version, so they are compatible — and they are compatible
+  *because of our own change*, `MakeHeader` now writing `build_version` into file headers.
+  The real caveat is much narrower: an autosave will only be refused across a **rebase onto a
+  new upstream release**, where `g_build_version` itself changes. Saving in-game before an
+  upgrade is still never a bad habit; it is not a requirement between our own RCs.
 - Then run **Settings > System > AYN Thor > "Apply Thor defaults"**. See the top of this
   document for why.
 

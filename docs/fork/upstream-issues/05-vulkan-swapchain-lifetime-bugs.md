@@ -8,8 +8,8 @@
 ## Environment
 
 - Azahar: upstream `master` at `073110cb4` (2026-09-07). All three are present at the line numbers below; I read them out of `git show master:` to be sure.
-- Test device: Samsung Galaxy Z Fold5 (SM-F946U1), Android 16 (API 36), Snapdragon 8 Gen 2, Adreno 740, stock Qualcomm driver.
-- Intended target: AYN Thor, Android 13, Snapdragon 8 Gen 2, dual screen — where the surface is replaced on every lid cycle and every display change, so all three of these paths run constantly.
+- Test device: Samsung Galaxy Z Fold5 (SM-F946U1), Android 16 (API 36), Snapdragon 8 Gen 2, Adreno 740, stock Qualcomm driver **512.676.1**.
+- Intended target: AYN Thor (`ro.product.model=AYN Thor`), Android 13 (API 33), `ro.soc.model=QCS8550`, Adreno 740 on driver **512.676.53** — a newer driver build than the one this was reasoned against, which matters because every claim here is about driver behaviour. Dual screen — where the surface is replaced on every lid cycle and every display change, so all three of these paths run constantly.
 
 ## Honesty up front
 
@@ -128,7 +128,7 @@ Surface creation, `vk_platform.cpp:191-196` and `:200-203` — any failure of `c
 
 `FindPresentFormat`, `vk_swapchain.cpp:147` onwards, is called from the `Swapchain` constructor at `:21` and does not guard against a lost surface. A surface lost there throws `vk::SurfaceLostKHRError` out of `System::Init` — during boot or during the renderer rebuild a savestate load performs — and terminates.
 
-Why this matters on Android specifically: the GPU is suspended along with the screen. The Adreno driver may answer the first acquire after a wake with `VK_ERROR_DEVICE_LOST` or `VK_ERROR_NATIVE_WINDOW_IN_USE_KHR`. Every one of those paths aborts the process, and the user's game goes with it, reported as `REASON_CRASH_NATIVE`. `VK_ERROR_DEVICE_LOST` after a GPU suspend is not an impossible state; it is a Tuesday.
+Why this matters on Android specifically: the GPU is suspended along with the screen. The Adreno driver may answer the first acquire after a wake with `VK_ERROR_DEVICE_LOST` or `VK_ERROR_NATIVE_WINDOW_IN_USE_KHR`. (Stated as driver behaviour in general; neither has been observed on the Thor's 512.676.53, and the Thor's only recorded Azahar crash is the texture-filter race, not a swapchain fault.) Every one of those paths aborts the process, and the user's game goes with it, reported as `REASON_CRASH_NATIVE`. `VK_ERROR_DEVICE_LOST` after a GPU suspend is not an impossible state; it is a Tuesday.
 
 Related, and worth stating even though I did not fix it: `vk_master_semaphore.cpp:154` has its own `UNREACHABLE_MSG("Device lost during submit")` in `MasterSemaphoreFence::SubmitWork`, reached from the emulation thread. A genuine device loss will still abort there regardless of what the swapchain does. That one is a bigger design question — what does the emulator do when the device is gone — and I have no answer for it.
 

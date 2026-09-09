@@ -6,11 +6,42 @@ Package IDs matter for every adb command below: the default `vanilla` flavor is 
 
 ---
 
+## Correction, 2026-09-09: the device does not support the ranking below
+
+Two read-only `adb` sessions on Marty's Thor
+(`baselines/2026-09-09-thor-device-snapshot.md`, `baselines/2026-09-09-thor-diagnostics.md`)
+read `dumpsys activity exit-info` for every emulator on it. What they found does not match the
+ranking in §1.
+
+- **Azahar's only recorded death on the device is a foreground `APP CRASH (NATIVE)`** — the
+  2026-09-08 rc1 texture-filter crash, stack recovered and confirmed. Nothing since rc2.
+- **melonDS's eight recorded session losses are all foreground native crashes too**, across
+  three fatal signals.
+- **There is no `reason=3 LOW_MEMORY` record for any package, at any date, and no
+  `EXCESSIVE RESOURCE USAGE` record either.** The cached-kill class this document ranks #1 has
+  never been observed on the target device.
+- The device is the **12 GB SKU** (`MemTotal` ~11.0 GiB), with ~4.2 GiB available and 206 GB of
+  221 GB storage free at the time of the dump. Nothing was under pressure.
+
+That does not make the mechanism in §1 fictional — it was reproduced on the Fold5 under induced
+pressure, and it is how Android works. It means **this document's confidence ordering is not
+evidence about the Thor**, and the crash class it ranks #3 is the only class the Thor has
+actually produced. Read §1 as "what could happen", not "what did".
+
+**Two Android-version errors, now resolvable.** The Thor is **Android 13, SDK 33**, confirmed by
+`getprop`. Every claim below that reasons from Android 14 behaviour — the 10-second freeze
+timing and `REASON_FREEZER` kills on a sync binder call — does not apply to it. The
+cached-app freezer *is* enabled on the device (`use_freezer=true`,
+`freeze_debounce_timeout=600000`), so freezing happens; the Android-14-specific kill semantics
+do not.
+
+---
+
 ## 1. Root cause, ranked
 
 ### TL;DR
 
-The app does **not** deliberately stop emulation on sleep/background. It pauses the emu thread and keeps `Core::System` alive; even OS-initiated *activity* destruction keeps the game (the fragment only calls `stopEmulation()` when `isFinishing`). "The game is gone" therefore almost always means **the whole process was killed while cached**, after which the restored task silently reboots the title from scratch, which is exactly what users describe. There is a second, smaller class of "app kills it itself" paths (re-delivered launch intents, core errors during a detached window) and a third class of Vulkan surface bugs on resume that freeze or abort rather than lose the game.
+The app does **not** deliberately stop emulation on sleep/background. It pauses the emu thread and keeps `Core::System` alive; even OS-initiated *activity* destruction keeps the game (the fragment only calls `stopEmulation()` when `isFinishing`). "The game is gone" was therefore assumed to mean **the whole process was killed while cached** (but see the correction above: on Marty's Thor it has meant a foreground native crash every recorded time), after which the restored task silently reboots the title from scratch, which is exactly what users describe. There is a second, smaller class of "app kills it itself" paths (re-delivered launch intents, core errors during a detached window) and a third class of Vulkan surface bugs on resume that freeze or abort rather than lose the game.
 
 ### #1 (most likely): process killed by the OS while cached — "lose the game"
 
@@ -20,10 +51,10 @@ The app does **not** deliberately stop emulation on sleep/background. It pauses 
 2. `EmulationActivity.onStop()` dismisses the secondary-display `Presentation` (`EmulationActivity.kt:220-223`) → `secondarySurfaceDestroyed`.
 3. `surfaceDestroyed` → `clearSurface()` → `NativeLibrary.surfaceDestroyed()` releases the `ANativeWindow` and tells the `EmuWindow` its surface is null (`EmulationFragment.kt:1763-1785`, `native.cpp:504-515`, `emu_window.cpp:20-34`).
 4. Nothing keeps the process out of the cached tier: no foreground service (removed upstream in 70221780e / 8efd95984 in 2024), no wake lock, no `onTrimMemory`, no PiP. `AndroidManifest.xml` declares no service and none of `FOREGROUND_SERVICE*`, `WAKE_LOCK`, `REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`. `keepScreenOn="true"` (`res/layout/activity_emulation.xml:8`, `fragment_emulation.xml:7`) only prevents idle sleep while foreground.
-5. The process is now an ordinary cached process (oom_adj >= 900, frozen after 10 s on Android 14) holding **~0.6-0.9 GiB at 1x resolution and ~1.1-1.8 GiB at 3-4x**, of which ~330-360 MiB is dirty anonymous memory that lmkd counts in full (see §5). It is the heaviest cached process on the device by a wide margin; Android 13 (the Thor's OS) also caps cached processes at 32 (`DEFAULT_MAX_CACHED_PROCESSES`), and lmkd's `kill_heaviest_task` policy picks the biggest RSS first.
+5. The process is now an ordinary cached process (oom_adj >= 900; frozen after 10 s on Android 14 — the Thor is Android 13, where the freezer is enabled with a 600 s debounce) holding **~0.6-0.9 GiB at 1x resolution and ~1.1-1.8 GiB at 3-4x**, of which ~330-360 MiB is dirty anonymous memory that lmkd counts in full (see §5). It is the heaviest cached process on the device by a wide margin; Android 13 (the Thor's OS) also caps cached processes at 32 (`DEFAULT_MAX_CACHED_PROCESSES`), and lmkd's `kill_heaviest_task` policy picks the biggest RSS first.
 6. When the user comes back, Android restores the task: `EmulationActivity.onCreate(savedInstanceState != null)` → `isActivityRecreated = true` (`EmulationActivity.kt:147`); `onRestoreInstanceState` restores `isEmulationReady = true` from the bundle (`:243-248`); `EmulationFragment.onResume` finds `NativeLibrary.isRunning()` false (fresh process, `stop_run` initialised `true` at `native.cpp:99`) → `emulationState.run(true)` → state STOPPED → on `surfaceChanged` a new `RunCitra` **boots the game from the title screen** (`EmulationFragment.kt:1738-1752, 1787-1807`). No error, no dialog. From the user's point of view: "I woke the Thor, Azahar was in recents, I tapped it, my game restarted and I lost two hours."
 
-**Why 8-12 GB RAM does not save you.** Available RAM after the Thor's launcher, dual-display stack, GMS and whatever else is cached is much less than nominal; the Android 13 cached-process cap and the "large cached" subreason (`LARGE_CACHED`: "process took large amount of cached memory") do not require true OOM; and the freezer kills a frozen process outright if it receives a sync binder call (`REASON_FREEZER`). Eden (yuzu fork) *has* a `specialUse` foreground service and Thor users still report the identical symptom on lid open (eden-emulator/Issue-Reports #562: "Eden was still running in the background it says and showed a preview of my game screen... it just opened the normal Eden home screen"). So on this device even the sibling agent's foreground service will reduce, not eliminate, the kills; footprint reduction and autosave are what make it survivable.
+**Why 8-12 GB RAM does not save you.** Available RAM after the Thor's launcher, dual-display stack, GMS and whatever else is cached is much less than nominal; the Android 13 cached-process cap and the "large cached" subreason (`LARGE_CACHED`: "process took large amount of cached memory") do not require true OOM; and on Android 14 the freezer kills a frozen process outright if it receives a sync binder call (`REASON_FREEZER`) — that last one does not apply to the Thor, which is on 13. Eden (yuzu fork) *has* a `specialUse` foreground service and Thor users still report the identical symptom on lid open (eden-emulator/Issue-Reports #562: "Eden was still running in the background it says and showed a preview of my game screen... it just opened the normal Eden home screen"). So on this device even the sibling agent's foreground service will reduce, not eliminate, the kills; footprint reduction and autosave are what make it survivable.
 
 **Corroborating upstream evidence.** azahar-emu/azahar #519 (Thor/Odin 2/RP4: heavy battery drain while sleeping with Azahar open; maintainer: making sleep behave better "might also make it more likely the game will just die while sleeping"), #925 (RTC after sleep, Thor users, Marty's fix), #73 (user asking for the FGS notification back "to prevent the emulator from restarting when it's running in the background"). No upstream issue has ever been filed specifically as "game lost after sleep" - it lives inside those threads and the Reddit PSA.
 
@@ -183,7 +214,18 @@ No fastmem, no `HostMemory`, no ashmem/memfd (except adrenotools' custom-driver 
 
 The graphics allocations show under "Gfx dev"/"GL mtrack" in `dumpsys meminfo`, are unreclaimable, and count in `VmRSS`. The 1 GiB dynarmic VA reservation and the untouched tail of the upload ring are VSZ only and do not count. There is no `onTrimMemory`/`onLowMemory`/`ComponentCallbacks2` anywhere under `src/android/` and no cache eviction on background, so the cached process keeps its full working set while the OS looks for a victim.
 
-Verdict on plausibility: on an 8 GB Thor with the Android 13 cached-process cap, the freezer (if on 14), `kill_heaviest_task`, and a launcher + dual-display stack + GMS in front of it, a ~1-1.5 GiB cached process that has been paused for 30+ minutes is the expected victim - memory pressure/cache policy is a more plausible primary cause than an OEM killer (none found) or the app's own lifecycle handling (which is correct in the pause/keep-alive sense, just unprotected). Crash-on-resume is real but secondary, and it shows up as `CRASH_NATIVE`/ANR in `exit-info`, which is how to tell the classes apart.
+~~Verdict on plausibility: on an 8 GB Thor ... memory pressure/cache policy is a more plausible primary cause ... Crash-on-resume is real but secondary.~~
+
+**Overturned 2026-09-09 by the device's own `exit-info`.** The last sentence had it exactly
+right about method and exactly backwards about the answer: the classes *are* told apart by
+`exit-info`, that was read, and it says **crash**. Marty's Thor is the **12 GB** SKU, not 8 GB;
+it holds ~4.2 GiB available; it is on Android 13, so the "freezer (if on 14)" branch is closed;
+and it has produced **no `LOW_MEMORY` record for any package at any date**, against eight
+foreground `APP CRASH (NATIVE)` records for melonDS and one for Azahar.
+
+So: memory pressure remains a plausible *mechanism in general*, demonstrated on the Fold5 under
+induced pressure, and it is not the primary cause on this device. Crash is not secondary here;
+it is the only class observed.
 
 ---
 

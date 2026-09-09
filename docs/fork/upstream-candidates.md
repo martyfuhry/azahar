@@ -28,7 +28,7 @@ a few lines, disclosed. Everything else stays in the fork.
 
 | Finding | Evidence | Shape | Validated? |
 |---|---|---|---|
-| Changing the texture filter mid-game crashes | 12 crashes in 20 cold boots on the **pre-fork** baseline `b8aa5f893`, 0 in 5 when the filter is set before launch; `SIGSEGV` in `vkCmdEndRenderPass`, and `vkQueueSubmit` returning `VK_ERROR_DEVICE_LOST`. Full write-up in `research/texture-filter-crash.md`. **Corroborated on the Thor:** one `reason=5 APP CRASH (NATIVE)` status 11 at 2026-09-08 21:11:37 on `org.azahar_emu.azahar.thor`, the rc1 session, matching the crash Marty reported after changing the filter mid-game — stack not captured | **Issue.** Highest value here: reproducible, pre-dates the fork, and the report is most of the work | Counts and stacks are lab phone only. The Thor has one matching native crash but no backtrace and no count. Marty must still reproduce and count on the Thor, on an official build, and on the Thor's own driver (512.676.53, not the Fold5's 512.676.1) |
+| Changing the texture filter mid-game crashes | 12 crashes in 20 cold boots on the **pre-fork** baseline `b8aa5f893`, 0 in 5 when the filter is set before launch; `SIGSEGV` in `vkCmdEndRenderPass`, and `vkQueueSubmit` returning `VK_ERROR_DEVICE_LOST`. Full write-up in `research/texture-filter-crash.md`. **Confirmed on the Thor, with a stack:** the 2026-09-08 21:11:37 rc1 crash was recovered from DropBox — `VulkanWorker`, `qglinternal::vkCmdEndRenderPass`, `Vulkan::Scheduler::WorkerThread`, fault address **`0xb4`**, an exact match for signature #1, with `texture_filter = xBRZ` at `resolution_factor = 4` persisted at crash time and reverted afterwards | **Issue.** Highest value here: reproducible, pre-dates the fork, and the report is most of the work | **Signature confirmed on the Thor's own driver (512.676.53), so the newer driver does not fix it.** The *counts* (12/20) are still Fold5-only, and frame #03 could not be symbolised. Marty must still get his own count on an official build |
 | Custom textures are never freed | No unload path anywhere in `src/video_core/custom_textures/`; memory converges on the pack's full decoded size (29 GiB for a 4K pack) | **Issue.** The fix is an eviction policy, far past five lines | Derived from source, not measured |
 | Custom textures crash under Vulkan | Existing upstream issues #1308 and #2118, the latter from an AYN Thor Max with 16 GB. The OpenGL half is fixed (`c07f2cc96`); the Vulkan half is not | **Comment on the existing issues** with our analysis | Not reproduced by us |
 | Preload budget overshoots by one texture | `custom_tex_manager.cpp:204-234` checks the budget after adding | **Issue**, or a small patch if the check can move | Source only |
@@ -47,28 +47,40 @@ tracker. An AI-assisted PR is therefore not prohibited; **disclose it in the bod
 The maintainer is responsive on issues but the PR queue is slow and review-heavy, some open
 since 2022, so expect latency and substantive review.
 
-**What the Thor snapshot did to the motivation for this whole section (2026-09-09).** The
+**What the Thor evidence did to the motivation for this whole section (2026-09-09).** The
 reason to do melonDS work at all was that Marty was losing sessions on the Thor, and the
 working theory was a low-memory reclaim during sleep. His device's own `exit-info` says
-otherwise: **two foreground `APP CRASH (NATIVE)` status 11 records on 2026-08-29, no
-`LOW_MEMORY` record, and no excessive-CPU record.** The likely cause is upstream issue #1624
-(external-display path on dual-screen devices), **already fixed upstream** in `cc6c3ba3`
-(2026-05-13) and shipped to the nightly channel only; his installed build is the 2.0.1
-release, whose release commit `5ec3648d` is dated 2026-05-06 and therefore cannot contain it.
+otherwise: **eight foreground `APP CRASH (NATIVE)` records between 2026-08-24 and 08-29,
+across three different fatal signals (6× SIGSEGV, 1× SIGTRAP, 1× SIGABRT), with no
+`LOW_MEMORY` record and no excessive-CPU record at all.** Memory and storage were comfortable
+throughout. See `baselines/2026-09-09-thor-diagnostics.md`.
 
-Two consequences:
+**The cause is unknown, and we should say so.** Upstream #1624 was the obvious candidate and
+is **ruled out**: `cc6c3ba3` is a one-line Kotlin change, so its failure mode is
+`reason=4 APP CRASH(EXCEPTION)`, while every melonDS loss here is `reason=5 APP CRASH(NATIVE)`
+— and the device records both reasons, hours apart, on 09-08. Independently, one null
+dereference at one line cannot produce three different fatal signals. **Do not write anywhere
+that a nightly may fix his problem.** The display *area* is not exonerated — `Screen-2` does
+carry `FLAG_PRESENTATION` — but without a stack nothing can be placed, and the stack is gone
+(≈3-day DropBox retention against eleven-day-old crashes).
 
-1. **His problem may need nothing from us.** A plain melonDS nightly is the first thing to
-   try, and if it works, the fork is optional for him.
+Three consequences:
+
+1. **Nothing in the fork is known to fix his crashes**, and no upstream version is known to
+   either. The only cheap next step is to capture a fresh crash within the retention window.
 2. **The value of what we would offer upstream changes shape.** The foreground-service
-   proposal loses its "this is why Thor owners lose sessions" motivation — that story is now
-   #1624's, and it is closed. The findings that keep their full value are the ones that stand
-   on their own source-level argument: the stale-checkpoint save corruption in PR #1666, the
-   surface-generation bug (#1665), and the GL-teardown-off-context leak. Those are unaffected.
+   proposal loses its "this is why Thor owners lose sessions" motivation entirely — that story
+   is not supported on the one Thor we can see. The findings that keep their full value are
+   the ones that stand on their own source-level argument: the stale-checkpoint save
+   corruption in PR #1666, the surface-generation bug (#1665), and the GL-teardown-off-context
+   leak. Those are unaffected.
+3. **Priority drops.** `usagestats` says melonDS is 59 launches and 2 h 36 m total, last used
+   for nine seconds on 09-08; his play has moved to Azahar. Spending more on the melonDS fork
+   before a fresh crash is captured is hard to justify.
 
 This does **not** mean the fork's work is wrong, only that its headline justification was
-borrowed from a bug someone else already fixed. Do not carry the old framing into any issue
-or PR body.
+borrowed from a mechanism this device never exhibited. Do not carry the old framing into any
+issue or PR body — and do not replace it with the #1624 framing either.
 
 | Finding | Evidence | Shape | Validated? |
 |---|---|---|---|
@@ -84,10 +96,10 @@ or PR body.
 
 ## Order of operations
 
-0. For melonDS specifically: install a plain upstream **nightly** on the Thor and see whether
-   the crashes stop. If they do, #1624 was the whole problem and most of the melonDS section
-   above is optional work rather than needed work. This costs nothing and settles the biggest
-   open question.
+0. For melonDS specifically: **capture a fresh crash**. Reproduce it on the Thor and have
+   `dumpsys dropbox` read within three days, before Android rotates the record away. Until
+   that exists, the melonDS section above is a set of source-level findings with no connection
+   to the problem that started it, and nothing here should be filed as if it were the fix.
 1. Marty validates on the Thor. Record the driver version with every measurement.
 2. File issues where the policy or the size says issue. Reproduce independently first, in his
    own words, per Azahar's policy.

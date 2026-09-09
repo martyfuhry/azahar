@@ -18,8 +18,11 @@ legal exposure is (see §6).
 **The standing caveat, stated once and true of every number in this document.** Every measurement
 this fork has ever taken was taken on a **Galaxy Z Fold5** (SM-F946U1, Android 16), folded on its
 2316x904 cover panel, one run per metric, awake throughout, on a single screen with no real
-secondary display. Same SoC as the Thor. Not the same device, panel, thermal envelope, lid, RAM
-SKU or Android version. **Nothing in this fork has ever been measured on the target hardware.**
+secondary display. Same SoC as the Thor. Not the same device, panel, thermal envelope, lid or Android
+version (the RAM SKU is now known: ~11.0 GiB, the 12 GB part). **No performance number in this
+fork has ever been measured on the target hardware** — though two read-only `adb` sessions on
+2026-09-09 did read the Thor's identifiers, OS level, Vulkan driver, memory, displays and crash
+history; see `baselines/2026-09-09-thor-device-snapshot.md` and `-thor-diagnostics.md`.
 Item **D-0 (RESCOPED: vibe check only, not a baseline — see Standard of evidence)** exists to fix that and is the highest-ranked item in the plan.
 
 ---
@@ -30,7 +33,7 @@ Item **D-0 (RESCOPED: vibe check only, not a baseline — see Standard of eviden
 
 | Problem the plan was built around | Status | Evidence |
 |---|---|---|
-| **Background CPU burn → `EXCESSIVE CPU USAGE` kill** | **Solved.** 8.19 % → **0.33 %** of one core while paused, against a 2 % limit. | rc1 vs baseline, `baselines/2026-09-08-rc1-vs-baseline.md`. The `AAudio_1` thread that burned 7.82 % producing silence is gone. |
+| **Background CPU burn → `EXCESSIVE CPU USAGE` kill** | **Solved.** 8.19 % → **0.33 %** of one core while paused, against a 2 % limit. The *burn* was a real problem on any device; the *kill* it was named for has only ever been recorded on the Fold5 — the Thor's `exit-info` has no excessive-CPU record for any package (§4.2a). | rc1 vs baseline, `baselines/2026-09-08-rc1-vs-baseline.md`. The `AAudio_1` thread that burned 7.82 % producing silence is gone. |
 | **Resident memory** | **Largely solved.** TOTAL PSS 1.70 GiB → **1.24 GiB** (−27 %); GL mtrack 770 → **312 MB** (−59.5 %); a further −49 MiB of EGL in rc2. | rc1 and rc2 baselines. |
 | **Frame pacing** | **Was never a problem, and is now better anyway.** Zero janky and zero dropped frames on *every* build measured, including the pre-fork baseline. rc2's 60 Hz panel mode moved p95/p99 from 25 ms to 16 ms — smoothness, not throughput. | rc2 baseline; graphics-preset pass. |
 | **Emulation speed** | **Not a problem.** ACNL holds 60 fps at **4x** with zero janky frames, 3.9 ms of GPU per 16.7 ms frame, and 96-101 % emulation speed at every scale from 1x to 4x. | `graphics-settings-guide.md` §2. |
@@ -53,8 +56,10 @@ Item **D-0 (RESCOPED: vibe check only, not a baseline — see Standard of eviden
 4. **We widened an upstream crash and do not know how.** Changing the texture filter mid-game
    crashed 12 times in 20 on the pre-fork baseline `b8aa5f893` and **19 times in 20 on rc1**. See
    **X-1**; this is the only item in the plan where the fork made something measurably worse.
-5. **Nothing has been measured on the Thor**, no sleep/wake or deep-suspend soak has ever been
-   run on any device, and no battery figure exists anywhere. See **D-0**.
+5. **No performance number has been measured on the Thor**, no sleep/wake or deep-suspend soak
+   has ever been run on any device, and no battery figure exists anywhere. Two read-only
+   snapshots on 2026-09-09 read the device's static properties and its crash history, which is
+   not the same thing as running the emulator on it. See **D-0**.
 6. **The lifecycle work is almost entirely unverified.** Every rc1 Vulkan fix, every rc2
    dual-screen fix and both rc2 input fixes are code-review-driven with no reproduction. Two
    crashes we fixed were never made to happen on purpose.
@@ -80,19 +85,24 @@ describes changes.** Where this revision restates a limitation, it has been re-r
 ## 0b. The Thor: what we know and what we are guessing
 
 Sources: web research (`research/thor-research.md`), the Fold5 probes, the code sweeps, the
-RetroArch storage diagnosis (`research/retroarch-thor-storage.md` — the only document in the fork
-containing facts confirmed on Marty's actual Thor), and the field QA notes.
+RetroArch storage diagnosis (`research/retroarch-thor-storage.md`), the field QA notes, and —
+since 2026-09-09 — **`baselines/2026-09-09-thor-device-snapshot.md`, a read-only `adb` snapshot of
+the device itself**. That snapshot is the first data ever taken from the Thor. It settles the
+identifiers, the driver version and the crash history; it does **not** settle memory, thermals,
+panels or anything that needs a running build, so D-0 is still owed.
 
 ### 0b.1 Hardware facts to design against
 
 | Fact | Value | Design consequence |
 |---|---|---|
-| SoC | Snapdragon 8 Gen 2 (SM8550), Adreno 740 | Same silicon as the Fold5, so Fold5 CPU/GPU numbers transfer. Display, thermal and lid numbers do not. |
+| Identifiers (**measured 2026-09-09**) | `ro.product.manufacturer=AYN`, `ro.product.model=AYN Thor`, `ro.product.brand=qti`, `ro.product.device` = `ro.product.name` = `kalama` | `ThorDefaults.knownDevices` matches manufacturer + model. Brand is `qti`, so a brand match fails; `kalama` is Qualcomm's SM8550 platform name shared with unrelated hardware, so a device match is unsafe. |
+| SoC (**measured**) | `ro.soc.model=QCS8550` — Snapdragon 8 Gen 2 (SM8550), Adreno 740 | Same silicon as the Fold5, so Fold5 **CPU** numbers transfer. Display, thermal and lid numbers do not. |
+| GPU driver (**measured**) | Qualcomm Adreno Vulkan **512.676.53**; the Fold5 is **512.676.1** | Same GPU, different driver build. **GPU numbers and every driver-gated workaround transfer less freely than the SoC row implies** — G-6's blacklists, the swapchain work and the texture-filter crash all live in driver behaviour. Re-check on the Thor's driver before relying on a Fold5 GPU result, and name the driver in any upstream report. |
 | CPU map (Fold5) | cpu0-2 A510 @2.0; cpu3-4 A715 + cpu5-6 A710 sharing one freq domain @2.8; cpu7 X3 @3.36; governor `walt` | Azahar sets no affinity, no priority, no ADPF anywhere. See T-5 (parked). |
 | Top screen | 6" AMOLED 1080x1920 @ 120 Hz | rc2 puts it in its 60 Hz mode and calls `Surface.setFrameRate(60, FIXED_SOURCE)`. **Unverified that the Thor's mode list contains a mode our tolerance matches.** |
 | Bottom screen | 3.92" AMOLED 1080x1240 @ 60 Hz | Now gets the same refresh-rate treatment. 3DS bottom is 320x240, so 3.4x saturates it. |
 | RAM | 8 / 12 / 16 GB SKUs | **We do not know which SKU Marty has.** At ~1.3 GiB PSS the emulator is the largest process on an 8 GB device, which is the whole premise of the LMK argument in §4.1. Read it in D-0. |
-| OS | Android 13 (API 33), AYN launcher | Cached-app freezer exists on 13. `FOREGROUND_SERVICE_SPECIAL_USE` not required until 34 (already declared). |
+| OS (**measured**) | Android 13, SDK 33 — confirmed by `getprop`, no longer inferred from the spec sheet | Cached-app freezer exists on 13. `FOREGROUND_SERVICE_SPECIAL_USE` not required until 34 (already declared). |
 | Cooling | Active fan, AYN Quiet/Smart/Sports, firmware-controlled | **No app API exists.** We cannot read or set it. It is a variable to hold constant in soaks, and an observation to record during the battery soak (see D-0). |
 | Control centre | AYN button: per-screen brightness, per-screen volume, turn either display off, long-press = bottom screen off | The bottom-screen-off shortcut is a real user path that our secondary-display code must handle. See **T-9**. |
 | Launcher / frontends | Marty runs **Argosy** (`com.nendo.argosy`) and **Cocoon** on the Thor, over a library at `/storage/emulated/0/roms/<system>` | **This is not the AYN launcher, and it changes R-5's premise.** See **R-11**. |
@@ -301,7 +311,7 @@ and the log file. `record_frame_times` flushes its CSV every ten seconds.
 | p50 / p95 / p99 present | 16/25/33 | 16/25/25† | **16/16/16**† | — | **never measured** |
 | Janky frames | 0 / 1797 | 0 / 1798 | 0 / 1796 | 0 | **never measured** |
 | Battery, 8 h paused | — | — | — | **no target exists** | **never measured** |
-| Kill history | `EXCESSIVE CPU 9.27 %` (2026-09-02) | none in 5 cycles | none in 5 cycles | none | **never read** |
+| Kill history | `EXCESSIVE CPU 9.27 %` (2026-09-02) | none in 5 cycles | none in 5 cycles | none | **read 2026-09-09:** one `APP CRASH (NATIVE)` (rc1, texture filter, stack confirmed); nothing since rc2; **no `LOW_MEMORY`, no excessive-CPU record on the device at all** |
 
 † taken with scrcpy running, at `resolution_factor = 3`; comparable rc1-vs-rc2 but **not**
 comparable with the scrcpy-free pre-fork/rc1 columns. This is why the table has two measurement
@@ -324,7 +334,7 @@ Every item names a metric from §2 and a verification. "Par" = can run in its ow
 
 | ID | Item | Payoff (metric) | Effort | Risk | Files | Verify | Par |
 |---|---|---|---|---|---|---|---|
-| **D-0** | **Take the baseline on the Thor.** A full `measure.sh` pass on Marty's device at his settings (4x, both panels, Thor defaults applied): D-1 in all three states **including screen off**, D-2 at 45 s / 45 s after HOME / 3 min after HOME, D-3 both boot scenarios, D-4 **per panel** via the Perfetto frametimeline config (`--timestats` cannot separate the two layers usefully), D-5 with a real 30-minute lid-closed dwell, and a battery reading across an overnight paused session. Record: `getprop ro.product.{model,device,manufacturer}`, `MemTotal`, the panel mode lists for both displays, the stock Vulkan driver version, `dumpsys display` for both panels with the lid open and shut, the AYN fan mode held constant and noted, and whether the fan keeps running while emulation is paused. | Every conclusion in §0.1 is currently a Fold5 conclusion. This is the only item that can make them Thor conclusions. | M | L | `tools/thor/measure.sh`, `tools/thor/frametimeline.pbtxt` | A `docs/fork/baselines/<date>-thor-first-baseline.md` in the same shape as the existing two, with the §2.3 table's last column filled in | device-serial |
+| **D-0** | **Take the baseline on the Thor.** A full `measure.sh` pass on Marty's device at his settings (4x, both panels, Thor defaults applied): D-1 in all three states **including screen off**, D-2 at 45 s / 45 s after HOME / 3 min after HOME, D-3 both boot scenarios, D-4 **per panel** via the Perfetto frametimeline config (`--timestats` cannot separate the two layers usefully), D-5 with a real 30-minute lid-closed dwell, and a battery reading across an overnight paused session. Record: `MemTotal`, the panel mode lists for both displays, `dumpsys display` for both panels with the lid open and shut, the AYN fan mode held constant and noted, and whether the fan keeps running while emulation is paused. **The identifiers, the OS level and the Vulkan driver version are already taken** — see `baselines/2026-09-09-thor-device-snapshot.md` — so do not re-derive them; the memory SKU, the panels, the thermals and every running measurement are still owed. | Every conclusion in §0.1 is currently a Fold5 conclusion. This is the only item that can make them Thor conclusions. | M | L | `tools/thor/measure.sh`, `tools/thor/frametimeline.pbtxt` | A `docs/fork/baselines/<date>-thor-first-baseline.md` in the same shape as the existing two, with the §2.3 table's last column filled in | device-serial |
 | **T-7** | **Lifecycle policy: autosave, then get out of the way.** Implement `onUserLeaveHint` (Home) and treat display-state changes (lid/screen off) separately. On lid close / screen off: write the autosave (already happens), flush the pipeline cache (already happens), run the trim **unconditionally** (M-2b), then **stop the foreground service** so the process falls to cached, receives the real trim callbacks, and is frozen by the cached-app freezer. Restart the FGS from `onStart`. On Home with the screen on, keep the FGS (fast return is worth it and the screen is on anyway). Setting-gated (`fgs_policy`: always / screen-on-only / never) so both halves are measurable. | **D-1 in the screen-off state** (expect 0 % once frozen, vs 0.33 % now); **D-2 paused PSS** (expect −450 MB once the trim fires); **battery across an 8 h paused session**; **D-5** (expect kills to appear, and to cost ~3 s each). | M | M — this deliberately allows the kill that rc1 prevented. It is only defensible because the autosave works; see §4.1. | `EmulationActivity.kt`, `ForegroundService.kt`, `EmulationFragment.kt`, `SecondaryDisplay.kt`, `native.cpp` paused branch | Three overnight soaks per policy on the Thor; battery Δ, D-1, D-2, D-5, and a resume-from-autosave that lands in the right place | Needs D-0 |
 
 ### Tier 1 — worth doing next
@@ -435,8 +445,8 @@ tiers. It does that, and four other things:
    throw; a single refused start that is never retried) — **FGS-1**.
 
 Meanwhile the thing it was originally justified by — the `EXCESSIVE CPU USAGE` kill at 9.27 %
-against a 2 % limit — was solved by B1 instead, and solved better: the process is now quiet whether
-or not it is exempt from the check.
+against a 2 % limit, **a Fold5 record; the Thor has never produced one** — was solved by B1
+instead, and solved better: the process is now quiet whether or not it is exempt from the check.
 
 **Conclusion.** The FGS should stop being a permanent property of a running game and become a
 property of the *foreground*. The policy to implement and measure is **T-7**: on Home with the
@@ -463,6 +473,12 @@ known.
 
 ### 4.2 Every number is from a Fold5, and here is what is most likely to be wrong on the Thor
 
+Still true of every *number*. Since 2026-09-09 the Thor has given up three things that are not
+numbers — its identifiers, its Android level and its Vulkan driver (512.676.53 against the Fold5's
+512.676.1) — plus its `exit-info` history. None of that changes the ranking below; the driver
+difference sharpens item 1 and adds a caveat to anything driver-gated, and the exit history is what
+§4.2a is about.
+
 Ranked by how much a Thor measurement could change the plan:
 
 1. **"4x is free" and "frame pacing is clean."** Both were measured on **one** panel — the Fold5's
@@ -478,8 +494,10 @@ Ranked by how much a Thor measurement could change the plan:
    resident and no trim is a different story, and it is the story T-7 and M-2b are written against.
 4. **Paused CPU and the kill.** 0.33 % was measured behind HOME **with the screen on**. No
    measurement pass on any device has ever sent `KEYCODE_SLEEP`. Deep suspend, the AYN lid switch
-   and Android 13 (rather than the Fold5's 16) are all untested, and the one real kill record we
-   own is a Fold5 record.
+   and Android 13 (rather than the Fold5's 16) are all untested. The Thor's `exit-info` has now
+   been read and contains **no** excessive-CPU or `LOW_MEMORY` record for any package, so the
+   one `EXCESSIVE CPU USAGE` record we own remains a Fold5 record and the kill this item is
+   about has never been observed on the target.
 5. **The 60 Hz mode.** T-4 picks a mode by refresh rate with a tolerance and by matching resolution.
    Whether the Thor's top panel offers a mode our matcher accepts, and whether the 60 Hz bottom
    panel has anything to pick at all, is unknown.
@@ -488,6 +506,47 @@ Ranked by how much a Thor measurement could change the plan:
    only ever been exercised against no display and against a hidden virtual one.
 
 D-0 is written to settle 1-6 in one session.
+
+### 4.2a What the Thor's `exit-info` says, and what it does to §4.1
+
+`baselines/2026-09-09-thor-device-snapshot.md` read Android's own record of why each emulator on
+the device last died. Three things in it matter to this plan.
+
+- **Azahar has exactly one death on record**: 2026-09-08 21:11:37, `reason=5 APP CRASH (NATIVE)`,
+  status 11 — the rc1 session, matching the mid-game texture-filter change Marty reported. **The
+  stack was recovered** and is an exact match for the research note's signature #1 — `VulkanWorker`,
+  `qglinternal::vkCmdEndRenderPass`, `Vulkan::Scheduler::WorkerThread`, fault address `0xb4` — with
+  `texture_filter = xBRZ` at `resolution_factor = 4` persisted at crash time. **So the crash is
+  confirmed on the Thor's own driver, 512.676.53; the newer driver does not fix it.** And
+  **nothing at all since rc2 was installed**. That is the first evidence of any kind that rc2 is
+  stable in the field. It is weak evidence — part of one day, no controlled conditions, and an
+  absence rather than a measurement — but it is on the right device.
+- **There is no `LOW_MEMORY` record and no `EXCESSIVE RESOURCE USAGE` record for any package on the
+  Thor**, at any date. §4.1's premise — that the FGS was justified by an excessive-CPU kill — was
+  always a Fold5 premise, and it stays one. Nothing here contradicts §4.1's conclusion (the burn
+  was real, B1 fixed it, and the FGS's costs are unchanged), but the argument may not be quoted as
+  if the Thor had ever been killed for CPU. It has not been.
+- **melonDS died eight times in the foreground to native crashes**, across three different fatal
+  signals, not to reclaim. That is not an Azahar fact, but it is the same class of mistake this
+  plan is prone to: a mechanism demonstrated on the lab phone was assumed to be the mechanism on
+  the target. The follow-up diagnosis then ruled out the replacement theory (#1624) as well. See
+  `upstream-candidates.md` and `baselines/2026-09-09-thor-diagnostics.md`.
+
+Consequence for T-7: the item is unchanged in shape — it is still decided by the battery
+measurement — but its risk section should no longer imply the Thor is a device that kills for
+CPU. It is a device that, on the record available, has never done so.
+
+Three device facts from the same session that the plan had listed as unknown:
+
+- **`MemTotal` is 11 535 400 kB (~11.0 GiB)** — the 12 GB SKU, not 8 GB, with ~4.2 GiB available
+  and ~2 GB of swap already in use. §0b.1's "we do not know which SKU" is answered, and §4.2's
+  item 3 softens: 1.3 GB resident on a 12 GB device is not the story it would be on 8 GB. This
+  weakens, but does not remove, the LMK premise in §4.1 — it makes T-7 less urgent, not wrong.
+- **The cached-app freezer is enabled** (`use_freezer=true`, `freeze_debounce_timeout=600000`), so
+  T-7's "let it get frozen" half has a freezer to be frozen by.
+- **No thermal history is available.** `Thermal Status: 0`, but `HAL Ready: false` and the cached
+  temperature list is empty, so the absence of throttling records is not evidence of absence.
+  §4.2's item 2 stands entirely.
 
 ### 4.3 Savestate build-locking is already relaxed — and is now slightly too lax
 

@@ -173,7 +173,9 @@ override fun onStartCommand(...): Int {
 }
 ```
 
-Failure scenario, which is *precisely the scenario the fork exists for*:
+Failure scenario, which is the scenario the fork was written for (though on Marty's Thor it is
+not the scenario that actually cost him sessions — see
+`../baselines/2026-09-09-thor-diagnostics.md`; the S1 finding below is unaffected either way):
 
 1. Game running, `EmulatorForegroundService` foreground, user closes the lid.
 2. Memory pressure; the low memory killer takes the process anyway (the service

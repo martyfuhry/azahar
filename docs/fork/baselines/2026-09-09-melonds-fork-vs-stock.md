@@ -2,13 +2,21 @@
 
 Before/after evidence for `/home/martyfuhry/Development/melonds-android`, branch `thor/main`,
 measured on the Galaxy Z Fold5 `R3CW705DSTF`. Two questions were asked of the device: **what
-was actually killing melonDS in the background**, and **does the fork stop it**.
+kills melonDS in the background on this phone**, and **does the fork stop it**.
+
+> **Read with the Thor correction (2026-09-09).** The question this pass was set up to answer
+> was framed as "what was actually killing melonDS" — meaning on Marty's Thor. It cannot answer
+> that, and the Thor has since answered it itself: `baselines/2026-09-09-thor-diagnostics.md`
+> shows **eight foreground `APP CRASH (NATIVE)` records and no `LOW_MEMORY` record at all**.
+> Everything below is a valid Fold5 result about a real Android mechanism. None of it is a
+> statement about why Marty lost sessions.
 
 The short version, which the rest of this document backs up: on this device the excessive-CPU
 rule was never the mechanism — stock melonDS idles at 0.5–1.3 % of one core while backgrounded,
-comfortably inside every AOSP tier. The mechanism is the **memory tier**. Stock drops to
-`oom_score_adj=900` (cached), is frozen at the 5-minute mark, and was reclaimed with
-`reason=3 (LOW_MEMORY)` under induced pressure. The fork's foreground service holds the same
+comfortably inside every AOSP tier. The mechanism **on this phone, under induced pressure,** is the
+**memory tier**: stock drops to `oom_score_adj=900` (cached), is frozen at the 5-minute mark,
+and was reclaimed with `reason=3 (LOW_MEMORY)`. That kill had to be induced; no melonDS process
+has ever been reclaimed on the Thor. The fork's foreground service holds the same
 process at `oom_score_adj=200`, which survived four times the pressure that killed stock.
 
 ---
@@ -206,15 +214,23 @@ complete `exit-info` history for every melonDS package on this device, at the ti
 | 0 | `EXCESSIVE RESOURCE USAGE`, `FREEZER`, `ANR`, `CRASH_NATIVE` | — | none, ever |
 
 No pre-existing background-death record was waiting on this phone; the only one that exists is the
-one this pass induced. **Marty's own Thor, where the failures actually happened, would outrank all
-of it** — `adb shell dumpsys activity exit-info me.magnum.melonds` there is the single most
-valuable piece of evidence still missing.
+one this pass induced. **Marty's own Thor, where the failures actually happened, outranks all of
+it** — and that command has since been run there.
 
-**Verdict.** The evidence supports **memory reclaim of a cached process** as the mechanism, with the
-freezer as a second hazard in the same tier, and rules out the excessive-CPU rule. The fork's
-foreground service addresses exactly the mechanism the evidence points at: it moves the process from
-`adj 900, cached, freezable` to `adj 200, FGS, not freezable`, and that is the difference between a
-process that the low memory killer took and one that it did not.
+**What the Thor said (2026-09-09).** `dumpsys activity exit-info me.magnum.melonds` on the Thor
+holds **eight foreground `APP CRASH (NATIVE)` records** across three fatal signals, and **no
+`reason=3 LOW_MEMORY` record and no excessive-CPU record at any date**. Its memory was
+comfortable. See `2026-09-09-thor-diagnostics.md`.
+
+**Verdict, corrected.** On *this phone, under induced pressure*, the evidence supports memory
+reclaim of a cached process as the mechanism, with the freezer as a second hazard in the same
+tier, and rules out the excessive-CPU rule. The foreground service addresses that mechanism: it
+moves the process from `adj 900, cached, freezable` to `adj 200, FGS, not freezable`.
+
+~~The fork's foreground service addresses exactly the mechanism the evidence points at.~~ **On
+the target device it does not**, because that mechanism has never fired there. The service is
+insurance against a hazard the Thor has not suffered; what the Thor suffers is native crashes of
+unknown cause. Do not quote this document's verdict as an explanation of Marty's lost sessions.
 
 ## The audio claim, settled
 

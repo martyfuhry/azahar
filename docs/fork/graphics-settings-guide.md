@@ -28,6 +28,11 @@ This is not a guess. Measured on the same silicon (§2), Animal Crossing at 4x r
 speed with a 16 ms frame and zero janky frames**, using 3.9 ms of a 16.7 ms frame on the GPU.
 There is no reason to settle for less.
 
+One caveat that applies to everything in §2: it was all measured on the **Fold5**, which runs
+Adreno driver **512.676.1** where the Thor runs **512.676.53**, and which has one panel where
+the Thor presents to two. The speed and memory numbers rest on the SoC and should carry; the
+**driver-crash observations do not automatically carry**, in either direction.
+
 **Do you need different settings per game?** No. See §5 — the honest answer for this library
 is "essentially none", and Azahar on Android has no per-game settings anyway.
 
@@ -83,6 +88,12 @@ Two instruments:
    is in the driver's pipeline creation, not in the filter shader, so this is not proof that the
    filter itself is broken. It is one more run of the scaled-texture path ending in a crash, on
    a configuration nobody needs.
+
+   **This one is driver-specific and was seen on the Fold5's 512.676.1 only.** Whether the
+   Thor's 512.676.53 does the same is untested. What *is* confirmed on the Thor is the other
+   texture-filter signature — the `vkCmdEndRenderPass` crash at `0xb4` — which was recovered
+   from his device on 2026-09-09 and matches the Fold5 stack exactly. So the filter advice below
+   stands; the specific pipeline-create crash is not evidence about his hardware.
 
 **What is not here.** The heavier second title (Zelda: A Link Between Worlds) was pushed to the
 device and taken through file creation, but the session's device budget ran out before it could

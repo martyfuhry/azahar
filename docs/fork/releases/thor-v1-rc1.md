@@ -326,11 +326,10 @@ Notes:
   the shader cache all survive. Do **not** uninstall: a full uninstall drops the private
   SharedPreferences holding the SAF grant and the user-directory path, which drops you into
   the first-run wizard even though the data is still there.
-- **Savestates from another build are rejected by design.** A `.cst` file carries the git
-  revision it was written by, and loading one from a different build fails with a build
-  mismatch rather than corrupting a session; the autosave from a previous build is skipped
-  with a toast rather than loaded. So **save in-game before you install this**, and do not
-  count on an existing savestate or autosave surviving the update.
+- ~~**Savestates from another build are rejected by design.**~~ **Corrected 2026-09-09:** this
+  was wrong. A differing git revision with a matching `Common::g_build_version` is
+  `RevisionMismatch`, which loads; only a differing build version is fatal. Marty loaded this
+  build's autosave in rc2. See `docs/fork/qa-notes.md` and the same bullet in the rc2 notes.
 
 ## What to test on the Thor
 
@@ -367,7 +366,11 @@ the Thor's lid or because they need real deep-suspend rather than a `KEYCODE_SLE
   suspend in this document is reasoned from code and from the HOME-with-screen-on
   measurements. Test 1 above is the real check.
 - **All numbers are single-run, on a Galaxy Z Fold5, not on the Thor.** Same SoC, different
-  device. Nothing here has been measured on the target hardware.
+  device, **and a different GPU driver build** — the Thor runs Adreno Vulkan 512.676.53, the
+  Fold5 512.676.1, which matters for anything whose mechanism is driver behaviour. No
+  performance number here has been measured on the target hardware. (Its identifiers, OS level,
+  driver and crash history were read read-only on 2026-09-09; see
+  `docs/fork/baselines/2026-09-09-thor-device-snapshot.md`.)
 - **Secondary-display and Thor-specific display work is wave 2 and is not in this build.**
   The branches `perf/secondary-window`, `fix/thor-display`, `perf/trim-memory` and
   `perf/boot` exist but are not merged into `thor/main`. What is in this build for the

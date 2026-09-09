@@ -69,10 +69,11 @@ the proposed fix safe. Also confirm the restored-open-drawer case.
 
 **01 — audio stream never stopped.** The big one, and the one with the most to reproduce. On the
 Thor, on an unmodified upstream build: play, Home, sample `/proc/<pid>/stat` over 30 s, confirm
-the process total is well over 2% and that the audio device thread is where it goes. Then get a
-**Thor** `EXCESSIVE CPU USAGE` kill record — leave it backgrounded past fifteen minutes with no
-foreground service and read `dumpsys activity exit-info`. The record in the draft is from the
-Fold5 and must not be presented as a Thor record.
+the process total is well over 2% and that the audio device thread is where it goes. A Thor kill record is **not** a
+prerequisite: `exit-info` on his device was read on 2026-09-09 and holds **no excessive-CPU
+record for any package at any date**, so one may never appear. File on the burn plus the Fold5
+kill record, labelled as a Fold5 record, and say in the body that the kill was seen on one
+device and the burn on both. The draft says the same; this line used to contradict it.
 
 **06 — `enforceRefreshRate`.** Dump the Thor's mode list *first*: if it reports a bit-exact
 `60.0`, the tolerance bug does not bite there and the report has to change shape. Then, with an

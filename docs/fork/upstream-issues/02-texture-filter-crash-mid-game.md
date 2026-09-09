@@ -64,17 +64,25 @@ The transition into a filtered, rescaled cache is what matters, not the filter. 
 
 `dumpsys activity exit-info` reports `APP CRASH(NATIVE) status=11`, not `LOW_MEMORY`, at the same footprint the process has on the runs that survive.
 
-### It happens on the AYN Thor too, on a different driver
+### Same signature on an AYN Thor, on a newer driver
 
-Everything above is the lab phone. A read-only snapshot of the Thor on 2026-09-09 (`docs/fork/baselines/2026-09-09-thor-device-snapshot.md`) read that device's own `dumpsys activity exit-info`. For `org.azahar_emu.azahar.thor` there is exactly one record:
+Everything above is the lab phone. The crash also reached the target hardware, and the stack was recovered from that device's DropBox (`docs/fork/baselines/2026-09-09-thor-diagnostics.md` §2). AYN Thor, Android 13, Adreno 740 on driver **512.676.53** — a newer build than the Fold5's 512.676.1:
 
 ```
-2026-09-08 21:11:37  reason=5 APP CRASH (NATIVE)  status=11
+signal 11 (SIGSEGV), code 1 (SEGV_MAPERR), fault addr 0x00000000000000b4
+Cause: null pointer dereference
+tid: 25311, name: VulkanWorker  >>> org.azahar_emu.azahar.thor <<<
+
+#02 /vendor/lib64/hw/vulkan.adreno.so (qglinternal::vkCmdEndRenderPass(VkCommandBuffer_T*)+60)
+#03 libcitra-android.so  [unsymbolised]
+#04 libcitra-android.so  (Vulkan::Scheduler::WorkerThread(std::stop_token)+748)
 ```
 
-That is the session in which Marty changed the texture filter mid-game and the app died — he reported it at the time, independently of any harness. Same failure class as the counts above, on the real target hardware, on Adreno driver **512.676.53** rather than the Fold5's 512.676.1.
+Same thread name, same driver entry point, same caller and the **same fault address `0xb4`** as signature #1 above. Frame #03 is where the Fold5 stack has `Vulkan::RenderManager::EndRendering()::$_0`; it could not be symbolised here because that build's `libcitra-android.so` (BuildId `78302c445299e3f216835204423323453698c7cc`) no longer exists, so the identification of #03 is inferred from the match rather than proven.
 
-**What this is not:** a backtrace. No tombstone or logcat was captured for it, so it cannot be shown to be the same *signature* — `vkCmdEndRenderPass`, the device-lost `UNREACHABLE`, or the pipeline-create crash — only the same reason code and status. It is corroboration that the crash happens on real hardware and is not an artifact of the lab phone or its driver; it is not a second data point in the 12/20 count, and it must not be quoted as one. Getting the stack for a Thor reproduction is the single most valuable thing still missing from this report.
+The configuration persisted at crash time was `texture_filter = xBRZ` at `resolution_factor = 4` — the documented trigger, and the same ingredients as the res-4 + Bicubic variant. Process uptime at the fault was 228 seconds.
+
+**Two things this does and does not add.** It establishes that the newer Adreno driver does **not** fix the crash, which is worth a line in the issue body. It does **not** add to the 12/20 count — it is one crash, from ordinary play, not a controlled run — and it must not be quoted as if it were.
 
 ## What I ruled out
 
@@ -116,7 +124,7 @@ The crash is only reachable by changing the filter while emulation is running �
 ## Marty must verify before filing
 
 - [ ] Reproduce it **on the Thor**, by hand, on an official Azahar build from the release page: boot at 3x with no filter, get into gameplay, change the filter, watch it die. Get my own count — even 3 out of 10 is enough to file, but it has to be mine and it has to be on upstream's binary.
-- [ ] Pull my own tombstone/logcat from the Thor and paste those backtraces, not the Fold5's. The 2026-09-08 21:11:37 record shows the crash reached the Thor, but no stack was kept for it, so it proves the class and not the signature.
+- [ ] A Thor stack already exists (2026-09-08 21:11:37, recovered 09-09) and matches signature #1 exactly, including the `0xb4` fault address. Paste **that** one, or a fresher one from my own reproduction — not the Fold5's. Note that its frame #03 is unsymbolised and say so rather than filling it in from the Fold5 stack.
 - [ ] State the Thor's driver version (512.676.53) in the body alongside the Fold5's (512.676.1). The counts are from the older driver; if the Thor rate differs sharply, that is itself worth reporting.
 - [ ] Confirm the 0/5 "set the filter before launching" result on the Thor too, since that is what the report offers as a workaround and I do not want to promise it if it does not hold on Android 13.
 - [ ] Check the affected-build field honestly: state which release I reproduced it on, not the commit my fork sits on.
