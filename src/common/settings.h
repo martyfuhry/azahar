@@ -68,40 +68,52 @@ enum class AutoSaveMode : u32 {
  * trade to make on the player's behalf. Anyone who wants it picks an interval; Off costs nothing
  * at runtime.
  *
- * Host, azahar-bench --save-after, median of three runs: Hyrule Warriors Legends 292 ms for a
- * 9.6 MB state, Animal Crossing New Leaf 346 ms for 13.7 MB, Majora's Mask 3D 362 ms for 21.4 MB.
- * Device (AYN Thor, Pokemon X, 7.3 MB state), Begin-save to Save-completed out of a logcat
- * capture: 281, 374, 375, 393 ms with the screen on, and 1756 and 1716 ms for two saves during
- * which the screen went off mid-write.
+ * What the cost is driven by, third and current answer: the *volume of emulated memory*, which is
+ * essentially constant. Instrumenting SerializeCompressed to count the bytes actually handed to
+ * the compressor gives 314.4 MB for Animal Crossing New Leaf, 309.9 MB for Majora's Mask 3D and
+ * 311.3 MB for Hyrule Warriors Legends -- a spread of 0.7%, because what is being serialized is
+ * FCRAM and VRAM, which are fixed-size regardless of what the title does with them. Serialize
+ * time is correspondingly flat (117-125 ms) and total time varies only with how compressible the
+ * contents happen to be:
  *
- * Those two sets look like they overlap. They do not: the device state is 7.3 MB and the host
- * ones are 9.6-21.4 MB, so the raw milliseconds are not comparable. Per megabyte the device
- * manages ~19.5 MB/s against the host's 33-59 MB/s, and even against the host's own cost model
- * (a fit over the two extreme host sizes gives ~234 ms fixed plus ~6 ms/MB, which predicts 278 ms
- * for a 7.3 MB state) the device's 374 ms is 1.34x slower. The device is slower; an earlier
- * version of this comment claimed otherwise, from comparing a small state against larger ones.
+ *     title  uncompressed     state    total    serialize   zstd    write
+ *     HWL    311.3 MB          9.5 MB  284.5 ms     117.2  162.9      4.4
+ *     MM3D   309.9 MB         17.8 MB  330.7 ms     117.7  205.3      7.7
+ *     ACNL   314.4 MB         13.6 MB  356.6 ms     124.8  224.7      7.1
  *
- * Extrapolating Majora's Mask 3D, 21.4 MB and a title actually played on this device: ~1.1 s if
- * cost is proportional to size, ~0.5 s if the large fixed component the host fit shows also
- * exists on the device. Which of those holds is unmeasured -- it needs a second state size on
- * device -- so plan against the pessimistic end. Both numbers are kept here because they are what
- * a reader deciding whether to turn this on actually needs.
+ * Note MM3D: the largest state of the three and *faster* than ACNL. State size does not predict
+ * save time.
  *
- * The 1.7 s outliers are the suspend path, not saving: SCREEN_OFF arrives about half a second
- * into each of them and the rest is spent with the device powering memory down underneath the
- * write (PASR segment offlining is in the same log window). A periodic save normally runs with
- * the screen on. It is not immune -- a sleep press landing inside a save window catches the same
- * tail, which for a 0.4 s save at a five minute interval is on the order of one sleep press in a
- * thousand -- but a freeze on a screen that has just gone dark is not one anybody sees.
+ * Two earlier models in this comment were wrong and are superseded. The first claimed the device
+ * was not slower than the host, from comparing a 7.3 MB device state against 9.6-21.4 MB host
+ * ones. The second corrected that by normalising per megabyte of *state* -- ~19.5 MB/s device
+ * against 33-59 MB/s host -- and concluded the device was 1.7-3x slower and that Majora's Mask
+ * would freeze for ~0.8-1.1 s there. That was also wrong, and was relayed to the owner before it
+ * was caught: it divided by the compressed output, which is not what the work is proportional to.
+ * The device's 374 ms was processing the same ~310 MB as everything else, which makes it ~1.1x
+ * the host, and Majora's Mask on that device should cost about what Pokemon X did -- ~374 ms, not
+ * a second. The Off default does not change: 374 ms is still far past the bar. Only the reasoning
+ * under it does.
+ *
+ * The device figures themselves stand, since they are direct measurements: AYN Thor, Pokemon X,
+ * Begin-save to Save-completed out of a logcat capture -- 281, 374, 375, 393 ms with the screen
+ * on, and 1756 and 1716 ms for two saves during which the screen went off mid-write. Those
+ * outliers are the suspend path, not saving: SCREEN_OFF arrives about half a second into each and
+ * the rest is spent with the device powering memory down underneath the write (PASR segment
+ * offlining is in the same log window). A periodic save normally runs with the screen on. It is
+ * not immune -- a sleep press landing inside a save window catches the same tail, on the order of
+ * one press in a thousand at a five minute interval -- but a freeze on a screen that has just
+ * gone dark is not one anybody sees.
  *
  * Not yet measured: a save taken during active play. Every device figure above is a pause-time
- * save, because no build with this setting has run on a device yet. The core logs "Save completed
- * in N ms" so that gap can be closed from logcat rather than argued about.
+ * save, because no build with this setting has run on a device yet. The breakdown above is
+ * produced by an opt-in diagnostic in the core, so this can be settled from a device log rather
+ * than modelled a fourth time.
  *
- * What would make this worth defaulting on is making the stall small rather than making it rarer:
- * getting compression and the file write off the emulation thread, and a cheaper zstd level for
- * autosaves specifically, which are transient and constantly rewritten. Both are recorded in
- * docs/fork/improvement-plan.md; neither has been sized.
+ * What would make this worth defaulting on is making the stall small rather than making it rarer.
+ * The split above says how: compression is 57-63% of it and the write 2%, so moving those off
+ * the emulation thread leaves the serialize alone, ~117-125 ms. See AS-1 and AS-2 in
+ * docs/fork/improvement-plan.md, which the same instrumentation has now sized.
  */
 enum class AutoSaveInterval : u32 {
     Off = 0,
