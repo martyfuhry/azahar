@@ -69,3 +69,21 @@ Every APK that will be installed on the Fold5 is built with `-PversionCodeOverri
   pulling, and emit a sentinel rather than a number if any of that fails. Identical values
   across supposedly different configurations mean the harness is broken, not that the fix
   worked.
+
+## Sleep and wake on the Fold5 (revised 2026-09-09)
+
+The blanket "never send sleep keys" rule is replaced by this. Marty keeps a PIN on the lab
+phone and prefers to unlock on request rather than disable it.
+
+- **Only the agent currently holding `device.lock` may send `KEYCODE_SLEEP` / `KEYCODE_WAKEUP`**,
+  and it must wake the device before releasing the lock. Sleeping the phone while another
+  agent is mid-run breaks them, which is what the original ban was protecting against.
+- **A locked screen does not block most measurement.** `dumpsys`, `/proc` and `/sys` reads,
+  per-thread CPU deltas, `exit-info`, meminfo, suspend counters and wake-lock listings all
+  work normally while the keyguard is up. An app launched *before* the sleep keeps running
+  behind the lock screen. So a full sleep/measure/wake cycle needs no human.
+- **What does need a human** is anything touching the UI after a wake: launching an app,
+  tapping, `uiautomator` dumps, or reading app content from a screenshot. For those, stop and
+  ask for an unlock at that exact point rather than failing or working around it. Batch such
+  steps together so one unlock covers them all.
+- Never change the lock setting yourself.
