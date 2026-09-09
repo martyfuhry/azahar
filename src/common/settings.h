@@ -56,8 +56,17 @@ enum class AutoSaveMode : u32 {
  * a state stalls the emulation thread for its whole duration, so the interval is the knob that
  * trades a visible hitch against how much play a kill can take with it.
  *
- * The default is five minutes. Expect a save of a large title on the device to freeze the
- * picture for something approaching a second.
+ * It ships Off, and the measurements below are why.
+ *
+ * Nothing else in the autosave path costs anything while the player is playing. The generation
+ * ring and the stale offer are what actually stop a save being lost, and they are bookkeeping at
+ * boot. The pause-time save covers backgrounding, the lid and Home, and is nearly free because
+ * the emulation thread is parking anyway. Periodic saving covers exactly one case none of those
+ * reach -- a hard kill in the middle of play, the rarest of them -- and it is the only one that
+ * charges for the cover while the game is on screen. For a fork whose priorities are a locked
+ * frame rate and not losing saves, in that order of how quickly they are noticed, that is not a
+ * trade to make on the player's behalf. Anyone who wants it picks an interval; Off costs nothing
+ * at runtime.
  *
  * Host, azahar-bench --save-after, median of three runs: Hyrule Warriors Legends 292 ms for a
  * 9.6 MB state, Animal Crossing New Leaf 346 ms for 13.7 MB, Majora's Mask 3D 362 ms for 21.4 MB.
@@ -69,20 +78,14 @@ enum class AutoSaveMode : u32 {
  * ones are 9.6-21.4 MB, so the raw milliseconds are not comparable. Per megabyte the device
  * manages ~19.5 MB/s against the host's 33-59 MB/s, and even against the host's own cost model
  * (a fit over the two extreme host sizes gives ~234 ms fixed plus ~6 ms/MB, which predicts 278 ms
- * for a 7.3 MB state) the device's 374 ms is 1.34x slower. The device is slower; the earlier
- * claim here that it was not was an artefact of comparing a small state against larger ones.
+ * for a 7.3 MB state) the device's 374 ms is 1.34x slower. The device is slower; an earlier
+ * version of this comment claimed otherwise, from comparing a small state against larger ones.
  *
  * Extrapolating Majora's Mask 3D, 21.4 MB and a title actually played on this device: ~1.1 s if
  * cost is proportional to size, ~0.5 s if the large fixed component the host fit shows also
  * exists on the device. Which of those holds is unmeasured -- it needs a second state size on
- * device -- so plan against the pessimistic end.
- *
- * Five minutes stands even so: ~1 s every 300 s is around a third of a percent of wall time, and
- * one minute would be five times that with a visible freeze every minute, which answers a
- * lost-save complaint with a stutter complaint. The generation ring and the stale offer are what
- * actually stop a save being lost, so this interval is a convenience against a hard kill mid-play
- * and does not need to be aggressive to earn its place. Three minutes is defensible and is one
- * tap away in the picker.
+ * device -- so plan against the pessimistic end. Both numbers are kept here because they are what
+ * a reader deciding whether to turn this on actually needs.
  *
  * The 1.7 s outliers are the suspend path, not saving: SCREEN_OFF arrives about half a second
  * into each of them and the rest is spent with the device powering memory down underneath the
@@ -93,9 +96,12 @@ enum class AutoSaveMode : u32 {
  *
  * Not yet measured: a save taken during active play. Every device figure above is a pause-time
  * save, because no build with this setting has run on a device yet. The core logs "Save completed
- * in N ms" so that gap can be closed from logcat rather than argued about. The real fix for the
- * stall, whatever it turns out to be, is to get compression and the file write off this thread,
- * which is a larger change than this setting.
+ * in N ms" so that gap can be closed from logcat rather than argued about.
+ *
+ * What would make this worth defaulting on is making the stall small rather than making it rarer:
+ * getting compression and the file write off the emulation thread, and a cheaper zstd level for
+ * autosaves specifically, which are transient and constantly rewritten. Both are recorded in
+ * docs/fork/improvement-plan.md; neither has been sized.
  */
 enum class AutoSaveInterval : u32 {
     Off = 0,
@@ -581,8 +587,7 @@ struct Values {
     Setting<u16> steps_per_hour{0, Keys::steps_per_hour};
     Setting<bool> apply_region_free_patch{true, Keys::apply_region_free_patch};
     Setting<AutoSaveMode> autosave_mode{AutoSaveMode::Off, Keys::autosave_mode};
-    Setting<AutoSaveInterval> autosave_interval{AutoSaveInterval::FiveMinutes,
-                                                Keys::autosave_interval};
+    Setting<AutoSaveInterval> autosave_interval{AutoSaveInterval::Off, Keys::autosave_interval};
 
     // Renderer
     // clang-format off

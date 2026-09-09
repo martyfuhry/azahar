@@ -486,15 +486,16 @@ static std::chrono::steady_clock::duration PeriodicAutoSaveInterval() {
  * already written an autosave of its own) never counts towards the next one.
  */
 static void RequestPeriodicAutoSaveIfDue(std::chrono::steady_clock::time_point& deadline) {
+    // Checked before the clock is read, because this is the default path: the setting ships Off,
+    // so for most players this function is two loads and a branch on every run loop iteration and
+    // never reads a clock at all. A stale deadline left behind here costs nothing -- turning the
+    // setting on mid-session then finds the deadline already passed and takes one save at once,
+    // which is the same thing that happens on any other transition into being due.
     const auto interval = PeriodicAutoSaveInterval();
-    const auto now = std::chrono::steady_clock::now();
     if (interval == std::chrono::steady_clock::duration::zero()) {
-        // Keep the deadline in step with the clock rather than letting it fall behind, so that a
-        // player who turns the setting on mid-session gets one save now and the cadence after it,
-        // instead of every missed interval at once
-        deadline = now;
         return;
     }
+    const auto now = std::chrono::steady_clock::now();
     if (now < deadline) {
         return;
     }

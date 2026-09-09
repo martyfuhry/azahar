@@ -244,7 +244,7 @@
     <string name="autosave_resume_stale_title">Older autosave found</string>
     <string name="autosave_resume_stale_message">A state was saved automatically on %1$s, from before your last session. Anything you saved in the application since then would be undone by loading it. Load it anyway, or keep playing from the application\'s own save data?</string>
     <string name="autosave_interval">Autosave while playing</string>
-    <string name="autosave_interval_description">Also saves a state at this interval while an application is running, so a sudden shutdown costs at most this much play. Emulation pauses briefly for each one. Needs \"Save state on exit\" to be on.</string>
+    <string name="autosave_interval_description">Also saves a state at this interval while an application is running, so a sudden shutdown costs at most this much play. Off by default: each save freezes the picture for up to about a second on a large game. Needs \"Save state on exit\" to be on.</string>
     <string name="autosave_interval_off">Off</string>
     <string name="autosave_interval_1">Every minute</string>
     <string name="autosave_interval_3">Every 3 minutes</string>
