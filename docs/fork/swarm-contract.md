@@ -41,3 +41,7 @@ Then, from `docs/fork/improvement-plan.md` §3, what Tier 2 and Tier 3 still hav
 - **G-7** — cache `StaticPipelineInfo::Hash()` per pipeline and hash only non-padding fields.
 - **G-9** — dynarmic page-table pointer mask / absolute offset, and drop the throwaway null-page-table JIT.
 - **M-6** — custom-texture preload budget from `largeMemoryClass` rather than total RAM. Latent only.
+
+## Fold5 version-code rule (added 2026-09-08 night)
+
+Every APK that will be installed on the Fold5 is built with `-PversionCodeOverride=40000000`, so any build installs over any other (the default version code is a build timestamp and Android refuses to downgrade a release build). Thor release builds keep the default timestamp code. Lock files live ONLY under the session scratchpad path named above; never create a `scratchpad/` directory inside the repo.
