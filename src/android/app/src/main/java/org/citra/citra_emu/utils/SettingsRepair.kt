@@ -4,11 +4,13 @@
 
 package org.citra.citra_emu.utils
 
+import androidx.preference.PreferenceManager
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 import org.citra.citra_emu.BuildConfig
+import org.citra.citra_emu.CitraApplication
 import org.citra.citra_emu.features.settings.model.AbstractBooleanSetting
 import org.citra.citra_emu.features.settings.model.AbstractIntSetting
 import org.citra.citra_emu.features.settings.model.AbstractSetting
@@ -62,12 +64,39 @@ object SettingsRepair {
     var pendingNotice: List<RepairChange> = emptyList()
         private set
 
-    /** Whether the user has asked to be left alone entirely. Stored beside config.ini. */
+    /** Preference key mirroring [isOptedOut], so the opt-out cannot be lost silently. */
+    private const val PREF_OPT_OUT = "SettingsRepair_OptOut"
+
+    private val prefs
+        get() = PreferenceManager.getDefaultSharedPreferences(CitraApplication.appContext)
+
+    /**
+     * Whether the user has asked to be left alone entirely.
+     *
+     * Recorded in *both* the sidecar beside config.ini and a preference, and read as the OR of
+     * the two. Everything else this object stores is provenance, which has to outlive an
+     * uninstall and therefore belongs next to the configuration it describes - but this is a
+     * decision about the app, and it is the only escape from a pass that deliberately overrides
+     * explicit choices. Every way the sidecar can fail - an unwritable directory, a rename that
+     * does not take, a record left unparseable or written by a newer build - reads back as
+     * `false`, which fails *open*: tier 1 would resume rewriting settings on every launch while
+     * the switch showed "off". A preference cannot fix an unwritable sidecar, but it fails in
+     * different circumstances, and agreeing to be left alone should not depend on the one store
+     * that can silently go away.
+     */
     var isOptedOut: Boolean
-        get() = ForkProfileStore.load()?.optOut ?: false
+        get() = prefs.getBoolean(PREF_OPT_OUT, false) || (ForkProfileStore.load()?.optOut ?: false)
         set(value) {
+            // The preference first: it is the store that cannot fail quietly, so if the sidecar
+            // write below is lost the user's decision still holds.
+            prefs.edit().putBoolean(PREF_OPT_OUT, value).apply()
             val record = ForkProfileStore.load() ?: ForkProfileRecord()
-            ForkProfileStore.save(record.copy(optOut = value))
+            if (!ForkProfileStore.save(record.copy(optOut = value))) {
+                Log.warning(
+                    "[SettingsRepair] Could not record the opt-out beside config.ini; it is held " +
+                        "in preferences only and will not survive a reinstall."
+                )
+            }
             Log.info("[SettingsRepair] Setting repair is now ${if (value) "off" else "on"}")
         }
 
@@ -103,7 +132,10 @@ object SettingsRepair {
         }
 
         val record = ForkProfileStore.load()
-        if (record?.optOut == true) {
+        // Deliberately not the isOptedOut getter: the record is already in hand, and this runs
+        // before any activity exists, where a second trip through the storage provider is not free.
+        val optedOut = prefs.getBoolean(PREF_OPT_OUT, false) || record?.optOut == true
+        if (optedOut) {
             Log.info("[SettingsRepair] Skipped: settings are being kept exactly as they are set.")
             return
         }
@@ -146,7 +178,9 @@ object SettingsRepair {
         val updated = ForkProfileRecord(
             lastAppliedVersionCode = BuildConfig.VERSION_CODE,
             lastAppliedVersionName = BuildConfig.VERSION_NAME,
-            optOut = record?.optOut ?: false,
+            // Not `record?.optOut`: a record that went missing or unparseable would otherwise
+            // erase a decision the preference still remembers, permanently.
+            optOut = optedOut,
             owned = outcome.owned,
             ceded = outcome.ceded.toList(),
             lastRepair = if (written.isEmpty()) {
