@@ -107,3 +107,31 @@ Prefer them to another hour of source reading whenever a claim is about what a d
 
 And note the retention window that cost us the melonDS stack: **DropBox keeps crash records
 for about three days.** Read a crash within three days of it happening or it is gone.
+
+## For the next release's notes: hardware shaders
+
+The Thor's live `config.ini` was found with **`use_hw_shader = false`** in `[Renderer]`,
+alongside `resolution_factor = 4` (`baselines/2026-09-09-thor-diagnostics.md` §7). That is
+software vertex shading at the most expensive resolution: `pica_core.cpp:1068` gates
+`accelerate_draw` on the setting, so with it off the 3DS geometry pipeline is interpreted on
+the CPU rather than handed to the GPU. Slower, hotter, worse battery.
+
+**Nothing in the fork wrote it.** The default is `true` in `settings.h:560` and
+`BooleanSetting.kt:97`, neither `ThorDefaults` nor `GraphicsPresets` touched it, and it is
+exposed in the Android settings UI, so it was toggled off by hand. No bug to hunt.
+
+It is now written by **`GraphicsPresets`** — all three tiers, Battery saver included — so any
+preset puts it back, and `ThorDefaults` picks it up through the Best-looking profile.
+
+**The bullet the next release's notes owe him:** the first-run profile only fills in keys
+`config.ini` has no value for, so **an upgrade will not repair this on its own**. Anyone who
+has been running with hardware shaders off gets them back only by running
+**Settings > System > AYN Thor > "Apply Thor defaults"**, by picking any graphics preset, or by
+flipping *Enable Hardware Shader* by hand. Worth saying explicitly, because "why is it slow at
+4x" has an answer that is not in any of our code.
+
+No restart is required: the value is read per draw, and `HW_SHADER` is not in
+`BooleanSetting.NOT_RUNTIME_EDITABLE`. The one caveat is OpenGL-only — the disk shader cache is
+refused at renderer init when hardware shaders are off (`gl_shader_disk_cache.cpp:115`), so a
+mid-session enable on the GL renderer compiles shaders as it goes until the next boot. Vulkan,
+which is what the Thor profile selects, has no equivalent gate.
