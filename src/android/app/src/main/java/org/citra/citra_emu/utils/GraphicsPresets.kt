@@ -37,8 +37,7 @@ enum class GraphicsPreset(
         /** The three presets that actually write settings, in the order the picker shows them. */
         val choices = listOf(BATTERY_SAVER, BALANCED, BEST_LOOKING, CUSTOM)
 
-        fun from(value: Int): GraphicsPreset =
-            values().firstOrNull { it.value == value } ?: CUSTOM
+        fun from(value: Int): GraphicsPreset = values().firstOrNull { it.value == value } ?: CUSTOM
     }
 }
 
