@@ -52,6 +52,7 @@ import org.citra.citra_emu.utils.GraphicsUtil
 import org.citra.citra_emu.utils.Log
 import org.citra.citra_emu.utils.SystemSaveGame
 import org.citra.citra_emu.utils.ThemeUtil
+import org.citra.citra_emu.utils.ThorDefaults
 
 class SettingsFragmentPresenter(private val fragmentView: SettingsFragmentView) {
     private var menuTag: String? = null
@@ -338,10 +339,43 @@ class SettingsFragmentPresenter(private val fragmentView: SettingsFragmentView) 
         }
     }
 
+    /**
+     * Re-applies the AYN Thor profile on request. Unlike the first-run pass this overwrites
+     * whatever is there, so it asks first.
+     */
+    private fun showThorDefaultsDialog() {
+        MaterialAlertDialogBuilder(settingsActivity)
+            .setTitle(R.string.thor_defaults)
+            .setMessage(R.string.thor_defaults_confirmation)
+            .setPositiveButton(android.R.string.ok) { _, _ ->
+                val changed = ThorDefaults.apply(settings, force = true)
+                settingsActivity.showToastMessage(
+                    settingsActivity.getString(R.string.thor_defaults_applied, changed),
+                    false
+                )
+                loadSettingsList()
+                fragmentView.onSettingChanged()
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
     @OptIn(ExperimentalStdlibApi::class)
     private fun addSystemSettings(sl: ArrayList<SettingsItem>) {
         settingsActivity.setToolbarTitle(settingsActivity.getString(R.string.preferences_system))
         sl.apply {
+            if (ThorDefaults.isThor) {
+                add(HeaderSetting(R.string.thor_defaults_header))
+                add(
+                    RunnableSetting(
+                        R.string.thor_defaults,
+                        R.string.thor_defaults_description,
+                        false,
+                        R.drawable.ic_restore,
+                        { showThorDefaultsDialog() }
+                    )
+                )
+            }
             val usernameSetting = object : AbstractStringSetting {
                 override var string: String
                     get() = SystemSaveGame.getUsername()
