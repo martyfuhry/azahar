@@ -1,4 +1,4 @@
-# RetroArch on the AYN Thor: "No Items" in Load Content, and frontend launches crashing
+# RetroArch on the AYN Thor: the cores vanished across an update
 
 Research note, 2026-09-09. Diagnosis only — nothing here was run against the Thor.
 Every claim about RetroArch's history and code is cited. Anything unverified is marked
@@ -6,52 +6,32 @@ Every claim about RetroArch's history and code is cited. Anything unverified is 
 
 ---
 
-## 0. Bottom line, and the two checks to do first
+## 0. Status: diagnosed and fixed, with one question left
 
-**Most likely cause: RetroArch's core directory is empty. It has no cores installed.**
+**CONFIRMED ON DEVICE.** Main Menu → Load Core showed **"No Items"** — zero cores installed.
+Running Online Updater → Core Downloader restored it. Both symptoms had one cause.
 
-That single fact explains both symptoms, and I can show it in the source of the exact build
-he is running (v1.22.2, commit 69a4f0e).
+- **"No Items" in every ROM directory** — with no cores installed, RetroArch's list of
+  extensions it can open collapses to exactly `7z|zip|`, "Filter Unknown Extensions" is on by
+  default, and the browser lists directories unconditionally while filtering files. So the tree
+  browsed fine and every ROM folder rendered empty. It looked like a permissions problem and
+  was not one. Mechanism proven in v1.22.2 source in §3.
+- **Argosy / Cocoon crashing on launch** — same cause, confirmed in §4: the frontends hand over
+  `LIBRETRO=/data/data/<pkg>/cores/<core>_libretro_android.so`, that file did not exist,
+  RetroArch warned below the default log level, *discarded the argument*, and then died in init
+  with no core path set.
 
-With zero cores installed, RetroArch's list of "extensions I know how to open" collapses to
-`7z|zip|`. "Filter Unknown Extensions" is **on by default**, and the file browser lists
-directories unconditionally but filters files against that list. So a directory full of
-`.sfc`/`.nes`/`.gba`/`.chd`/`.iso` files renders as **"No Items"** while the tree above it
-still browses perfectly. It looks exactly like a permissions problem and is not one.
+**The remaining question — why did the cores disappear? — is answered in §2.** Short version:
 
-The same empty core directory makes the frontends fail: Argosy and Cocoon pass
-`LIBRETRO=/data/data/<pkg>/cores/<core>_libretro_android.so`, that file no longer exists,
-RetroArch logs a warning, *drops the argument*, and then dies in init with no core path set.
+> They were never in the APK he now has. Cores ship "stock" **only** with the Google Play
+> builds, where they arrive as Dynamic Feature Modules and are symlinked into the cores
+> directory by code that returns early on any non-Play build. The libretro buildbot / GitHub
+> APK that Obtainium installed contains **one** native library — the frontend itself — and zero
+> cores. And because swapping a Play build for the buildbot build requires an **uninstall**,
+> the swap also took `/data/data/<pkg>/cores/` and `retroarch.cfg` with it.
 
-### Check 1 — are there any cores? (5 seconds)
-
-RetroArch → **Main Menu → Load Core**. If the only entries are
-"Download a Core" / "Install or Restore a Core" and there is no list of cores below them,
-**the cores are gone**. That is the answer.
-
-Fix: **Main Menu → Online Updater → Core Downloader**, and install the cores he uses
-(snes9x, mgba, nestopia, beetle-psx, etc.). The Android arm64 core feed his build points at is
-`http://buildbot.libretro.com/nightly/android/latest/arm64-v8a/`
-(`DEFAULT_BUILDBOT_SERVER_URL` for `__aarch64__` Android in
-[config.def.h at v1.22.2](https://github.com/libretro/RetroArch/blob/v1.22.2/config.def.h)) —
-I confirmed today that this URL returns HTTP 200 and is live.
-
-### Check 2 — prove it without downloading anything (5 seconds)
-
-RetroArch → **Settings → File Browser → "Filter Unknown Extensions" → OFF**.
-While in there, also confirm **"Filter by Current Core" → OFF** (it is the next entry down).
-
-Go back to Load Content and browse to `/storage/emulated/0/roms/<system>/`. If the ROMs
-**appear immediately**, the diagnosis is confirmed: it was never a permissions problem, it was
-the extension filter with nothing to filter *for*. (He should turn the filter back on after
-installing cores — it is the setting that keeps the browser usable.)
-
-### Check 3 — the freebie discriminator
-
-If any of his ROM folders contain `.zip` files, those **will still be listed** even now, while
-`.sfc`/`.chd`/etc. in the same folder are not. `7z` and `zip` are hardcoded into the extension
-list regardless of installed cores (see §3). A folder that shows the zips and hides everything
-else is a positive identification of this bug and rules out storage permissions outright.
+§6 is what he should do so it does not happen again. §5 Step 5 has one thing he must still
+check: **which GBA core**, because his RomM saves are filed under `mgba`.
 
 ---
 
@@ -87,25 +67,142 @@ relevant in §6.
 
 ---
 
-## 2. Ranked causes
+## 2. Why the cores vanished — the answer
 
-1. **The cores directory is empty** (`/data/data/<pkg>/cores/`), so the browser's extension
-   filter reduces to `7z|zip|` and the frontends' core path is dangling. Explains both
-   symptoms with one cause. **This is the leading hypothesis.** §3, §4.
-2. **The update was an uninstall + reinstall, which is why the cores are gone** — and it also
-   wiped `retroarch.cfg`, so his directory settings are back to defaults. §6.
-3. **"Filter by Current Core" is on with a core loaded** whose extensions don't match the
-   folder. Same visible symptom, different trigger, same 5-second check. §3.
-4. **The frontends are pointed at the wrong package** (`com.retroarch` vs
-   `com.retroarch.aarch64` vs `com.retroarch.ra32`) after a variant switch, so their
-   `startActivity` throws in *their* process. §4.
-5. RetroArch's configured `core_directory`/`libretro_directory` in `retroarch.cfg` points
-   somewhere the cores aren't (only possible if the cfg survived; §5 Step 4).
-6. **Ruled out as the primary cause:** scoped storage / `MANAGE_EXTERNAL_STORAGE`. v1.22.2
-   targets SDK 28 and he has the permission. Kept in §7 only because it is a live landmine for
-   his *next* update.
+His words: *"i didn't have to set up these cores before, they came stock standard with the
+install of retroarch."* That sentence is the whole diagnosis, because it is only true of one
+kind of RetroArch build.
 
----
+### 2.1 The buildbot / GitHub APK ships no cores. At all.
+
+I pulled the tail of `https://buildbot.libretro.com/stable/1.22.2/android/RetroArch_aarch64.apk`
+(184 MB) and read its zip central directory. The complete `lib/` contents:
+
+```
+lib/arm64-v8a/libretroarch-activity.so
+```
+
+One library — the frontend itself. The 184 MB is assets, not cores:
+
+| prefix | entries |
+|---|---|
+| `assets/shaders` | 4221 |
+| `assets/overlays` | 1906 |
+| `assets/assets` | 1783 |
+| `assets/info` | 292 |
+| `assets/autoconfig` | 212 |
+| `assets/database` | 146 |
+| `assets/filters` | 80 |
+
+Note `assets/info` — those 292 files are core **`.info` metadata** (`mgba_libretro.info`,
+`snes9x_libretro.info`, … and, amusingly, `azahar_libretro.info`). They describe cores that
+*could* be installed. They are not cores, and they are exactly why the Core Downloader has a
+list to show you on a fresh install. Mistaking them for cores is easy and they are not.
+
+### 2.2 Cores come "stock" only on Google Play, as Dynamic Feature Modules
+
+`RetroActivityCommon.java` at v1.22.2 — this is the mechanism, and the gate is one line:
+
+```java
+@Override
+protected void onCreate(Bundle savedInstanceState) {
+    cleanupSymlinks();
+    updateSymlinks();
+    PlayCoreManager.getInstance().onCreate(this);
+    super.onCreate(savedInstanceState);
+}
+
+private String getCorePath() {
+    String path = getApplicationInfo().dataDir + "/cores/";
+    new File(path).mkdirs();
+    return path;
+}
+
+/** Cleans up existing symlinks before new ones are created. */
+private void cleanupSymlinks() {
+    File[] files = new File(getCorePath()).listFiles();
+    for (int i = 0; i < files.length; i++) {
+        try { Os.readlink(files[i].getAbsolutePath()); files[i].delete(); }
+        catch (Exception e) { /* File is not a symlink, so don't delete. */ }
+    }
+}
+
+/** Triggers a symlink update in the known places that Dynamic Feature Modules
+ *  are installed to. */
+public void updateSymlinks() {
+    if (!isPlayStoreBuild()) return;                    // <-- the whole story
+    traverseFilesystem(getFilesDir());
+    traverseFilesystem(new File(getApplicationInfo().nativeLibraryDir));
+}
+```
+
+<https://github.com/libretro/RetroArch/blob/v1.22.2/pkg/android/phoenix-common/src/com/retroarch/browser/retroactivity/RetroActivityCommon.java>
+
+On a **Play** build, cores are delivered by Play as Dynamic Feature Modules into the app's
+native-library tree, and every launch symlinks them into `/data/data/<pkg>/cores/`. That is
+"stock standard": you install RetroArch Plus and the cores are simply there. Upstream keeps
+scaling this — PR #19320, "android: for play plus version increase min SDK for **100 feature
+modules**", 2026-08-01.
+
+On a **sideload** build `updateSymlinks()` returns on its first line. `/data/data/<pkg>/cores/`
+is populated by exactly one thing: **Online Updater → Core Downloader**.
+
+Two consequences worth naming:
+
+- `cleanupSymlinks()` runs unconditionally on every start and deletes every *symlink* in the
+  cores directory. It leaves regular files alone — so Online-Updater cores are safe, and it is
+  not what removed his.
+- On a Play build the cores are **symlinks, not files**. There is nothing there to back up.
+
+### 2.3 Ranked
+
+1. **He was on a Play Store build (or a vendor preload) and Obtainium replaced it with the
+   libretro buildbot APK.** The only hypothesis that explains "they came stock standard".
+   The applicationIds collide exactly — Play "RetroArch" and buildbot `RetroArch.apk` are both
+   `com.retroarch`; Play "RetroArch Plus" and buildbot `RetroArch_aarch64.apk` are both
+   `com.retroarch.aarch64` (v1.22.2 `build.gradle`: `playStorePlus` and `aarch64` both carry
+   `applicationIdSuffix '.aarch64'`) — but the signing keys differ, so Android refuses the
+   in-place update and Obtainium offers to uninstall first. Accepting that deletes
+   `/data/data/<pkg>/` (the cores, or on a Play build the symlinks *and* the delivered modules)
+   and `/sdcard/Android/data/<pkg>/` (**including `retroarch.cfg`**). The new app then has no
+   cores, by design. **This is the answer.**
+   *AYN handhelds commonly ship with emulators preloaded; whether the Thor specifically ships
+   RetroArch preinstalled I could not verify — if it does, that is the same story with the
+   vendor's build in place of Play's.* **Uncertain** which of the two.
+2. **A nightly → stable downgrade through Obtainium.** Same uninstall, same wipe, and it is a
+   documented, reported workflow: **#19325 "[Android] Allow APK downgrades"**, 2026-08-02,
+   <https://github.com/libretro/RetroArch/issues/19325>, whose reproduction steps literally
+   include *"Scenario C (Nightly to Stable Via Obtainium)"* and whose failure is
+   `App not installed as package appears to be invalid`. The reply: *"it is not possible to
+   downgrade an APK directly over an existing installation without uninstalling the app first"*.
+   The sideload flavors set `versionCode = System.currentTimeMillis() / 1000`, so any 2026
+   nightly outranks the November-2025 stable and going back is always a downgrade. This
+   explains the wipe but not "came stock", so it is second — and it may well have happened
+   *as well*.
+3. **A variant / ABI switch** — `com.retroarch` ↔ `com.retroarch.aarch64` ↔ `com.retroarch.ra32`
+   are three *different* applicationIds (v1.22.2 `build.gradle`: `normal` has no suffix and no
+   `abiFilters`; `aarch64` filters `arm64-v8a, x86_64`; `ra32` filters `armeabi-v7a, x86`). If
+   Obtainium's file-matching started picking a different filename, the result is a **brand-new
+   app** with an empty cores directory, while the old one may still be installed with its cores
+   intact. That would also strand the frontends on a package that is no longer the one he uses.
+   One command settles it: `adb shell pm list packages | grep -i retroarch` — more than one line
+   means this happened. Does not explain "came stock" either.
+4. **Also possible in the mix:** F-Droid. F-Droid ships a stripped RetroArch (~50 MB — see
+   #18756, which refers to "glui_minimal_assets.zip (used by the F-Droid release)") under
+   F-Droid's own signing key, so F-Droid ↔ buildbot is another signature swap requiring an
+   uninstall. Obtainium users mix these freely; **#19228 "Offer clean APKs, just like F-Droid,
+   on buildbot.libretro"**, 2026-07-18, <https://github.com/libretro/RetroArch/issues/19228>, is
+   an Obtainium user asking for exactly that, and confirms the buildbot APKs are the big ones.
+
+**Ruled out**
+
+- *"1.22.x moved the core directory."* It did not. `platform_unix.c` at v1.22.2 sets
+  `DEFAULT_DIR_CORE` to `<app_dir>/cores` — `/data/data/<pkg>/cores` — the same as it has been
+  for years.
+- *"An APK upgrade clears the extracted cores."* It does not. An in-place update leaves
+  `/data/data/<pkg>/` alone, and `cleanupSymlinks()` only removes symlinks (§2.2). Only an
+  **uninstall** wipes it — which is precisely why the mechanism in cause 1 and 2 matters.
+- Scoped storage / `MANAGE_EXTERNAL_STORAGE`. See §9.
 
 ## 3. The mechanism, proven in v1.22.2's source
 
@@ -215,6 +312,16 @@ filebrowser_parse(info->list, info->path, info->exts, info->label,
 
 ## 4. Why the frontends crash
 
+**Confirmed: the same single cause.** The frontends hand RetroArch an absolute path to a core
+file inside RetroArch's private data directory. With the cores directory empty, that path was
+dangling on every launch, and v1.22.2 turns a dangling `--libretro` into a silent init failure
+(§4.2). No second explanation is needed for the crashes, and none of the storage or intent
+theories in §9 survive the fact that Core Downloader fixed it.
+
+The one thing still worth checking is §4.3 — whether the frontends are also pointed at a package
+that no longer exists — because that failure looks identical from the outside and would still be
+there after the cores came back. `adb shell pm list packages | grep -i retroarch` answers it.
+
 ### 4.1 Argosy's intent — verified from source
 
 "Argosty" is **Argosy**, the RomM Android client, `rommapp/argosy-launcher`, package
@@ -309,20 +416,32 @@ core it names isn't installed, the launch dies.
 
 ## 5. What to do, in order
 
-### Step 1 — Load Core (Check 1 above)
+### Steps 1-3 — done
 
-Main Menu → **Load Core**. Empty ⇒ diagnosis confirmed.
+Load Core showed "No Items"; Core Downloader fixed it. For the record, the two checks that
+settled it in ten seconds were **Main Menu → Load Core** (empty list ⇒ no cores) and
+**Settings → File Browser → Filter Unknown Extensions → OFF** (ROMs reappear instantly ⇒ it was
+the filter, not permissions). Turn that filter back **on** now that cores are installed — it is
+what keeps the browser usable.
 
-### Step 2 — Core Downloader
+Worth also running once: **Online Updater → Update Core Info Files**. The `.info` files carry
+the per-core extension lists that feed the filter, and the ones baked into the APK
+(`assets/info/`, §2.1) are from November 2025.
 
-Main Menu → **Online Updater → Core Downloader** → install the cores he needs.
-While there, also run **Online Updater → Update Core Info Files** — the `.info` files carry the
-per-core extension lists that feed the filter, and a wiped install can have stale ones.
+### Step 3b — install the *right* GBA core: mGBA
 
-### Step 3 — turn the filter off temporarily (Check 2 above)
+His RomM saves are filed under an **`mgba`** directory, so mGBA is the core he was on. This
+matters beyond preference: RetroArch names save and state directories after the core, and
+Argosy resolves its save paths the same way (`LibretroSavePathResolver.kt`,
+`LibretroStatePathResolver.kt` in `rommapp/argosy-launcher`). If he installs a *different* GBA
+core — vba_next, gpsp, mgba's own variants — saves land under a different directory name and
+RomM's sync silently stops matching his existing saves.
 
-Settings → File Browser → **Filter Unknown Extensions** OFF, **Filter by Current Core** OFF.
-Confirm the ROMs appear. Turn Filter Unknown Extensions back on once cores are installed.
+So: **Core Downloader → mGBA**, and then make sure both frontends are set to mGBA for GBA.
+Cocoon's documented default for GBA is `vba_next`, so it very likely needs changing; check
+Argosy's per-platform core setting too. Argosy builds the core filename from its own core id —
+`"$dataDir/cores/${coreName}_libretro_android.so"` — so whatever it is set to must be a core he
+has actually downloaded, or §4 happens again.
 
 ### Step 4 — check the directory settings survived
 
@@ -348,7 +467,7 @@ adb shell pm list packages | grep -i retroarch
 PKG=com.retroarch.aarch64      # set to whichever line came back
 ```
 
-Was it reinstalled, or updated in place? This is the decisive question for §6:
+Was it reinstalled, or updated in place? This is the decisive question for §2.3:
 
 ```bash
 adb shell dumpsys package "$PKG" | grep -E "versionName|versionCode|targetSdk|installerPackageName|firstInstallTime|lastUpdateTime"
@@ -359,6 +478,9 @@ adb shell dumpsys package "$PKG" | grep -E "versionName|versionCode|targetSdk|in
   destroyed. That is the whole story.
 - `firstInstallTime` months older, only `lastUpdateTime` recent ⇒ it was a true in-place update
   and the cores should have survived; look harder at Step 4 and at `core_directory` in the cfg.
+- `installerPackageName` names the source that last wrote the app. `com.android.vending` means
+  a Play build is what is installed *now*; an Obtainium package id means the sideload build won.
+  Either way, compare it against what he expects — §2.3 cause 1 is exactly a change here.
 - `targetSdk=28` confirms v1.22.2 and confirms storage is not the issue.
   `targetSdk=36` would mean he is *not* on v1.22.2 after all — go read §7.
 - `installerPackageName` should name Obtainium (`dev.imranr.obtainium` or similar); if it says
@@ -419,36 +541,49 @@ If that fails the same way, it is RetroArch's side, not the frontend's.
 
 ---
 
-## 6. What the "update" most likely did
+## 6. How he stops this happening again
 
-He is on the November-2025 stable. Something a week ago removed his cores. Two mechanisms, both
-of which force an **uninstall**, and an uninstall on Android deletes `/data/data/<pkg>/`
-(**all downloaded cores**) and `/sdcard/Android/data/<pkg>/` (**including `retroarch.cfg`**):
+The root problem is that he has two update channels fighting over one app: whatever originally
+put a cores-included RetroArch on the device, and Obtainium. Pick one.
 
-1. **A downgrade.** libretro's sideload flavors set
-   `versionCode = System.currentTimeMillis() / 1000` — the build's epoch seconds
-   ([build.gradle](https://github.com/libretro/RetroArch/blob/master/pkg/android/phoenix/build.gradle)).
-   A stable APK built in November 2025 therefore has a *lower* versionCode than any 2026
-   nightly. If Obtainium's source moved from the nightly directory to the stable directory
-   (or he changed it), Android refuses the install with `INSTALL_FAILED_VERSION_DOWNGRADE` and
-   Obtainium offers to uninstall first. Tapping through that wipes everything.
-2. **A variant or signature switch** — `com.retroarch` ↔ `com.retroarch.aarch64`, or a Play
-   build replaced by the libretro-signed build. Different signature ⇒ no in-place update ⇒
-   uninstall required. In the variant case the *old* app may still be installed and the
-   frontends may still be pointed at it (§4.3).
+**Option A — he wants cores to keep coming stock.** Then the app must come from **Google Play**
+(RetroArch, or RetroArch Plus for the 64-bit build), because Dynamic Feature Module delivery is
+the only mechanism that installs cores for you (§2.2). In that case **remove RetroArch from
+Obtainium entirely**, or set that entry to track-only so it never offers to install. Obtainium
+cannot update a Play-signed app in place; every "update" it offers is an uninstall in disguise.
 
-Both are **inference**, marked uncertain — but `firstInstallTime` in Step 6 settles it in one
-command. Supporting evidence for "Obtainium is not on the GitHub-releases source": the v1.22.2
-release has no APK assets at all, only `retroarch-sourceonly-1.22.2.tar.xz`, so his Obtainium
-entry must be an HTML/direct-link source pointed at `buildbot.libretro.com` or `retroarch.com` —
-exactly the kind of config whose regex can start matching a different file.
+**Option B — he wants Obtainium and the libretro buildbot.** Perfectly reasonable, and it is
+what he has now. The deal is that **cores are his responsibility**: Online Updater → Core
+Downloader once, after which they are ordinary files in `/data/data/<pkg>/cores/` that survive
+in-place updates. To keep it stable:
 
-Worth telling him: **whatever he does, check the Obtainium app entry** and pin it to one
-directory — either `https://buildbot.libretro.com/stable/1.22.2/android/` or
-`https://buildbot.libretro.com/nightly/android/` — and to one filename
-(`RetroArch_aarch64.apk` for the Thor, which is arm64).
+- **Pin the Obtainium entry to one directory and one filename.** For the Thor (arm64):
+  `https://buildbot.libretro.com/stable/1.22.2/android/RetroArch_aarch64.apk`
+  (applicationId `com.retroarch.aarch64`), *or* the nightly directory
+  `https://buildbot.libretro.com/nightly/android/` with the `*-RetroArch_aarch64.apk` pattern.
+  **Never let one entry span both.** Nightly → stable is always a downgrade (§2.3 cause 2,
+  issue #19325) and Obtainium will offer to uninstall, which is what costs him the cores.
+- Note that libretro's GitHub *releases* carry **no APK assets** — v1.22.2 ships only
+  `retroarch-sourceonly-1.22.2.tar.xz`. So the Obtainium entry cannot be a GitHub-release
+  source; it is an HTML/direct-link source, and those are exactly the kind whose filename regex
+  can start matching a different variant. Worth opening the entry and reading what it is set to.
+- Never accept an Obtainium prompt that says the app must be uninstalled first. That prompt
+  *is* the bug. Back up, then decide deliberately.
 
----
+**What is worth backing up, and what cannot be.**
+
+```bash
+PKG=com.retroarch.aarch64     # or whatever `pm list packages | grep -i retroarch` reports
+adb pull /sdcard/Android/data/$PKG/files  ./ra-appdata-backup   # retroarch.cfg; DELETED on uninstall
+adb pull /sdcard/RetroArch                ./ra-backup           # saves, states, system, playlists
+```
+
+`/storage/emulated/0/RetroArch/` sits outside app scope and normally survives an uninstall.
+`/sdcard/Android/data/<pkg>/` does **not** — that is where `retroarch.cfg` lives, and that is
+why his configuration went with the cores. `/data/data/<pkg>/cores/` is unreachable without
+root and is always lost; on a Play build there is nothing there to save anyway, because they
+are symlinks (§2.2). Re-downloading cores is a two-minute job — the config and saves are the
+part actually worth protecting.
 
 ## 7. Version guidance and the trap waiting on his next update
 
@@ -511,21 +646,6 @@ will produce the storage failure that this report originally assumed:
   ([#19230](https://github.com/libretro/RetroArch/pull/19230)). If a freshly downloaded core
   fails to load on v1.22.2 with a `dlopen` error, that mismatch is the first thing to suspect.
 
-### Backup paths, before any uninstall
-
-```bash
-adb pull /sdcard/Android/data/$PKG/files  ./ra-appdata-backup   # retroarch.cfg lives here; DELETED on uninstall
-adb pull /sdcard/RetroArch                ./ra-backup           # saves, states, system, playlists, thumbnails
-adb pull /sdcard/Android/media/$PKG       ./ra-media-backup      # only exists on newer/scoped builds
-```
-
-`/storage/emulated/0/RetroArch/` is outside app scope and normally survives an uninstall.
-`/sdcard/Android/data/<pkg>/` does **not** — that is where `retroarch.cfg` lives, and that is
-why his config went with the cores. `/data/data/<pkg>/cores/` is unreachable without root and is
-always lost; cores are re-downloadable, which is the good news here.
-
----
-
 ## 8. Is this fixable by us?
 
 For him, right now, it is local: reinstall the cores and the "No Items" and the frontend crashes
@@ -561,22 +681,32 @@ would have saved this entire investigation.
 
 ## 9. What I ruled out, and what stays uncertain
 
-**Ruled out**
+**Ruled out** (all of these were live hypotheses before Load Core came back empty)
 
 - Scoped storage / `MANAGE_EXTERNAL_STORAGE`. v1.22.2 targets SDK 28 and keeps Android's legacy
   external storage; he has the permission; and the symptom (tree browses, files hidden, "No
   Items") is fully explained by the extension filter without invoking permissions at all.
-- A Play Store build. Confirmed Obtainium / libretro build. (Play builds *would* be a dead end:
-  `MANAGE_EXTERNAL_STORAGE` is stripped from them entirely —
-  [88ee3cc03](https://github.com/libretro/RetroArch/commit/88ee3cc03) — and their storage moved
-  to `Android/media` — PR #19261.)
+- A Play Store build being what is installed *now*. It is the Obtainium / libretro build —
+  which is the whole reason the cores are gone (§2). Note for later: had he ended up on a
+  *current* Play build instead, it would have been a different dead end, because
+  `MANAGE_EXTERNAL_STORAGE` is stripped from Play builds entirely
+  ([88ee3cc03](https://github.com/libretro/RetroArch/commit/88ee3cc03)) and their storage moved
+  to `Android/media` (PR #19261) — so a Play build cannot browse `/storage/emulated/0/roms` at
+  all. Cores stock, ROMs unreachable. That trade-off is worth knowing before choosing Option A
+  in §6.
 - A bad nightly. He is on a stable tag, not a nightly.
 - A `content://` URI RetroArch cannot resolve. Argosy passes the ROM as an absolute **path**;
   the content URI is only an extra grant.
 
 **Uncertain**
 
+- **Which cores-included build he was on before** — Google Play (RetroArch or RetroArch Plus)
+  or an AYN vendor preload. Both produce the identical outcome via the identical mechanism
+  (§2.3 cause 1); `firstInstallTime` and `installerPackageName` in §5 Step 6 would have
+  distinguished them, and may still if the old package is also still installed.
+- Whether an Obtainium variant/filename change (§2.3 cause 3) happened *as well*.
+  `pm list packages` answers it.
+- Whether the AYN Thor ships RetroArch preinstalled from the factory.
 - The identity of "Argosty" as `rommapp/argosy-launcher` (high confidence, not certain).
 - Cocoon's exact intent shape — the app is not open source (§4.4).
-- Exactly which of the two uninstall mechanisms in §6 fired. `firstInstallTime` answers it.
 - The 16 KB-page / NDK-29 core-compatibility caveat in §7 — plausible, untested.
