@@ -104,13 +104,34 @@ public:
     /**
      * Writes the driver pipeline cache for the current title to disk. Cheap when nothing has
      * been compiled since the last write (one size query, no I/O). Safe to call while the
-     * pipeline workers are still compiling: the driver serializes access to a VkPipelineCache
-     * that was not created externally synchronized.
+     * pipeline workers are still compiling: vkGetPipelineCacheData carries no external
+     * synchronization requirement (vk.xml marks no parameter of it, or of
+     * vkCreateGraphicsPipelines, externsync), so the driver must serialize a read against
+     * concurrent creates itself. Only *destroying* the cache needs the workers stopped, which
+     * is what WaitForWorkers() below is for.
      */
     void SaveDriverPipelineDiskCache();
 
 private:
     friend ShaderDiskCache;
+
+    /**
+     * Blocks until no shader or pipeline worker is running. Every Vulkan object a worker can be
+     * inside a driver call on -- the VkPipelineCache passed to vkCreateGraphicsPipelines, and the
+     * VkShaderModules owned by the ShaderDiskCaches -- is destroyed by vkDestroy* entry points
+     * the spec marks externally synchronized, so nothing may free them while a worker still
+     * holds them. Call this before replacing driver_pipeline_cache or before erasing anything
+     * from disk_caches.
+     */
+    void WaitForWorkers();
+
+    /**
+     * Makes it safe to destroy the ShaderDiskCaches: drains the workers, then submits and waits
+     * out the recorded command stream, because the Scheduler's queued lambdas hold raw
+     * GraphicsPipeline pointers and the GPU may still be executing with pipelines those objects
+     * own. Also drops this class's own raw pointers into them.
+     */
+    void QuiesceForDiskCacheTeardown();
 
     /// Loads the driver pipeline cache
     void LoadDriverPipelineDiskCache(const std::atomic_bool& stop_loading = std::atomic_bool{false},
@@ -155,6 +176,10 @@ private:
     DescriptorUpdateQueue& update_queue;
 
     Pica::Shader::Profile profile{};
+    // Declaration order is load-bearing: every GraphicsPipeline holds a reference to this cache
+    // and is owned by a ShaderDiskCache in disk_caches below, so reverse-order destruction has to
+    // destroy the pipelines first. Moving this member after disk_caches is a use-after-free that
+    // no compiler diagnostic and no test will catch.
     vk::UniquePipelineCache driver_pipeline_cache;
     /// Serialized size of driver_pipeline_cache when it was last loaded or written to disk
     std::size_t saved_driver_cache_size{0};
@@ -174,6 +199,7 @@ private:
     Shader trivial_vertex_shader;
 
     u64 current_program_id{0};
+    // Must stay declared after driver_pipeline_cache and pipeline_layout - see the note there.
     std::vector<std::shared_ptr<ShaderDiskCache>> disk_caches;
     std::shared_ptr<ShaderDiskCache> curr_disk_cache{};
 };

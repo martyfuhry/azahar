@@ -145,9 +145,36 @@ void PipelineCache::BuildLayout() {
 }
 
 PipelineCache::~PipelineCache() {
-    pipeline_workers.WaitForRequests();
-    shader_workers.WaitForRequests();
+    // No scheduler.Finish() here, unlike QuiesceForDiskCacheTeardown(): ~RendererVulkan already
+    // runs Finish(), WaitPresent() and device.waitIdle() in its body, and destroys the rasterizer
+    // that owns us afterwards. The GPU is idle and the Scheduler drained before we run, so there
+    // is nothing left in flight that could still hold a pipeline. The asymmetry with the two
+    // disk-cache teardown paths is deliberate, not an oversight.
+    WaitForWorkers();
     SaveDriverPipelineDiskCache();
+}
+
+void PipelineCache::WaitForWorkers() {
+    // This is only a barrier because the emulation thread is the sole producer for both pools.
+    // ThreadWorker::WaitForRequests() waits for the queue to drain and returns; it does not stop
+    // new work being queued behind it. Every producer - GraphicsPipeline::TryBuild via
+    // BindPipeline and InitPLCache, and ShaderDiskCache::Use*Shader - runs on the emulation
+    // thread, and so does every caller of this function, so nothing can queue while we wait.
+    // Neither pool queues into the other or into itself. If a producer is ever added on another
+    // thread, this stops being a barrier and the use-after-free it guards against comes back.
+    //
+    // Shaders first: a pipeline worker parks in Shader::WaitDone() until the shader worker that
+    // owns its modules is finished, so draining the pipeline pool first would only wait longer.
+    shader_workers.WaitForRequests();
+    pipeline_workers.WaitForRequests();
+}
+
+void PipelineCache::QuiesceForDiskCacheTeardown() {
+    WaitForWorkers();
+    scheduler.Finish();
+    current_pipeline = nullptr;
+    current_shaders.fill(nullptr);
+    shader_hashes.fill(0);
 }
 
 void PipelineCache::LoadCache(const std::atomic_bool& stop_loading,
@@ -165,8 +192,14 @@ void PipelineCache::SwitchCache(u64 title_id, const std::atomic_bool& stop_loadi
         return;
     }
 
-    // Make sure we have a valid pipeline cache before switching
+    // Make sure we have a valid pipeline cache before switching. This assignment destroys
+    // nothing (the handle is empty by the test above) and both values a worker could observe -
+    // VK_NULL_HANDLE and the new cache - are legal pipelineCache arguments, so this is not the
+    // rc2 use-after-free. It is still a write to a handle workers read, and it is the only one
+    // outside WaitForWorkers()' rule; draining here keeps that rule without exception, so that
+    // relaxing the test below can never quietly reintroduce the abort. The path is cold.
     if (!driver_pipeline_cache) {
+        WaitForWorkers();
         vk::PipelineCacheCreateInfo cache_info{};
         try {
             driver_pipeline_cache = instance.GetDevice().createPipelineCacheUnique(cache_info);
@@ -189,6 +222,12 @@ void PipelineCache::SwitchCache(u64 title_id, const std::atomic_bool& stop_loadi
 
 void PipelineCache::LoadDriverPipelineDiskCache(
     const std::atomic_bool& stop_loading, const VideoCore::DiskResourceLoadCallback& callback) {
+    // Assigning to driver_pipeline_cache below destroys whatever it holds. A pipeline worker
+    // that is inside vkCreateGraphicsPipelines on that handle would then be operating on a freed
+    // driver object; on Adreno the next lock of its internal mutex aborts the process with
+    // "FORTIFY: pthread_mutex_lock called on a destroyed mutex".
+    WaitForWorkers();
+
     vk::PipelineCacheCreateInfo cache_info{};
 
     if (callback) {
@@ -338,6 +377,13 @@ void PipelineCache::SaveDriverPipelineDiskCache() {
 void PipelineCache::LoadDiskCache(const std::atomic_bool& stop_loading,
                                   const VideoCore::DiskResourceLoadCallback& callback) {
 
+    // Dropping the ShaderDiskCaches destroys the GraphicsPipelines the pipeline workers hold
+    // pointers to, and the Shaders whose vkDestroyShaderModule would race the
+    // vkCreateGraphicsPipelines call those pipelines are passing the module to.
+    if (!disk_caches.empty()) {
+        QuiesceForDiskCacheTeardown();
+    }
+
     disk_caches.clear();
     curr_disk_cache =
         disk_caches.emplace_back(std::make_shared<ShaderDiskCache>(*this, GetProgramID()));
@@ -354,6 +400,10 @@ void PipelineCache::SwitchDiskCache(u64 title_id, const std::atomic_bool& stop_l
     if (curr_disk_cache && curr_disk_cache->GetProgramID() == title_id) {
         return;
     }
+
+    // Past this point curr_disk_cache changes and the applet/title cleanup below erases
+    // ShaderDiskCaches, with the same lifetime hazard as LoadDiskCache's clear()
+    QuiesceForDiskCacheTeardown();
 
     // Search for an existing manager
     size_t new_pos = 0;
