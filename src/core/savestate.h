@@ -139,4 +139,29 @@ u32 PickAutoSaveWriteSlot(const std::vector<SaveStateInfo>& generations, u32 avo
 /// PickAutoSaveWriteSlot on the files on disk
 u32 PickAutoSaveWriteSlot(u64 program_id, u64 movie_id, u32 avoid_slot);
 
+/**
+ * Blocks until the savestate write started by the last System::SaveState has finished, and
+ * rethrows whatever it failed with. Safe to call from any thread and when nothing is in flight.
+ *
+ * SaveState only performs the serialization; compression and the file write finish on a worker,
+ * so the state is not on disk when SaveState returns. Anything that needs it to be has to come
+ * through here or through FlushSaveStateWrite.
+ *
+ * This is the throwing form, for the two callers that can do something with the failure:
+ * SaveState calls it before starting another write, and LoadState before reading a slot, so a
+ * write that failed in the background is reported at the next save or load through the same
+ * ResultStatus::ErrorSavestate path a synchronous failure always used.
+ */
+void WaitForSaveStateWrite();
+
+/**
+ * WaitForSaveStateWrite for callers that only need the file to be there and have nowhere to put
+ * an exception: the functions that read what is on disk, and shutdown. A failure is logged here
+ * and left for the next WaitForSaveStateWrite to report.
+ */
+void FlushSaveStateWrite() noexcept;
+
+/// Whether a savestate write is still finishing on the worker
+bool IsSaveStateWriteInFlight();
+
 } // namespace Core

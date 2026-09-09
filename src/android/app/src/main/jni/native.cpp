@@ -1423,10 +1423,28 @@ jboolean Java_org_citra_citra_1emu_NativeLibrary_requestAutoSave([[maybe_unused]
 jboolean Java_org_citra_citra_1emu_NativeLibrary_waitForAutoSave([[maybe_unused]] JNIEnv* env,
                                                                  [[maybe_unused]] jobject obj,
                                                                  jint timeout_ms) {
-    std::unique_lock lock{autosave_mutex};
-    return static_cast<jboolean>(
-        autosave_cv.wait_for(lock, std::chrono::milliseconds(timeout_ms),
-                             [] { return autosave_completed == autosave_requested; }));
+    // Two things have to have happened for the state to be on disk, and the emulation thread only
+    // does the first. It serializes, which is what the request counter reports, and hands the
+    // compression and the file write to a worker; the rename that makes the state real happens
+    // there. A caller about to let the process die needs both.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    {
+        std::unique_lock lock{autosave_mutex};
+        if (!autosave_cv.wait_until(lock, deadline,
+                                    [] { return autosave_completed == autosave_requested; })) {
+            return JNI_FALSE;
+        }
+    }
+    // Polled rather than joined, so the whole call stays inside the caller's budget even if the
+    // filesystem is wedged. Overrunning is not a loss: the worker keeps going, and SaveState's
+    // tmp-then-rename means a process killed mid-write still leaves the previous state intact.
+    while (Core::IsSaveStateWriteInFlight()) {
+        if (std::chrono::steady_clock::now() >= deadline) {
+            return JNI_FALSE;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return JNI_TRUE;
 }
 
 void Java_org_citra_citra_1emu_NativeLibrary_stopEmulation([[maybe_unused]] JNIEnv* env,

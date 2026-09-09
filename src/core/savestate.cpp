@@ -3,18 +3,25 @@
 // Refer to the license.txt file included.
 
 #include <algorithm>
+#include <atomic>
 #include <charconv>
 #include <chrono>
 #include <cstring>
+#include <exception>
 #include <istream>
 #include <limits>
+#include <memory>
+#include <mutex>
 #include <ostream>
+#include <thread>
 #include <cryptopp/hex.h>
 #include <fmt/ranges.h>
 #include "common/archives.h"
+#include "common/bounded_byte_pipe.h"
 #include "common/file_util.h"
 #include "common/logging/log.h"
 #include "common/scm_rev.h"
+#include "common/scope_exit.h"
 #include "common/settings.h"
 #include "common/swap.h"
 #include "common/zstd_stream.h"
@@ -99,6 +106,10 @@ static bool ValidateSaveState(const CSTHeader& header, SaveStateInfo& info, u64 
 }
 
 std::vector<SaveStateInfo> ListSaveStates(u64 program_id, u64 movie_id) {
+    // A state whose write is still finishing is not in its slot yet, so listing now would either
+    // miss it or describe whatever the slot held before it
+    FlushSaveStateWrite();
+
     std::vector<SaveStateInfo> result;
     result.reserve(SaveStateSlotCount);
     for (u32 slot = 0; slot <= SaveStateSlotCount; ++slot) {
@@ -134,6 +145,9 @@ std::vector<SaveStateInfo> ListSaveStates(u64 program_id, u64 movie_id) {
 }
 
 SaveStateInfo GetSaveStateInfo(u64 program_id, u64 movie_id, u32 slot) {
+    // As in ListSaveStates: report the disk as it will be, not as it is mid-rename
+    FlushSaveStateWrite();
+
     SaveStateInfo info{};
     info.slot = std::numeric_limits<u32>::max();
 
@@ -297,27 +311,6 @@ u32 PickAutoSaveWriteSlot(u64 program_id, u64 movie_id, u32 avoid_slot) {
     return PickAutoSaveWriteSlot(ListAutoSaveStates(program_id, movie_id), avoid_slot);
 }
 
-static CSTHeader MakeHeader(u64 title_id) {
-    CSTHeader header{};
-    header.filetype = header_magic_bytes;
-    header.program_id = title_id;
-    std::string rev_bytes;
-    CryptoPP::StringSource ss(Common::g_scm_rev, true,
-                              new CryptoPP::HexDecoder(new CryptoPP::StringSink(rev_bytes)));
-    std::memcpy(header.revision.data(), rev_bytes.data(),
-                std::min(rev_bytes.size(), sizeof(header.revision)));
-    header.time = std::chrono::duration_cast<std::chrono::seconds>(
-                      std::chrono::system_clock::now().time_since_epoch())
-                      .count();
-    const std::string build_fullname = Common::g_build_fullname;
-    std::memcpy(header.build_name.data(), build_fullname.c_str(),
-                std::min(build_fullname.length(), sizeof(header.build_name) - 1));
-    const std::string build_version = Common::g_build_version;
-    std::memcpy(header.build_version.data(), build_version.c_str(),
-                std::min(build_version.length(), sizeof(header.build_version) - 1));
-    return header;
-}
-
 /**
  * Zstandard level for savestates. Level 1 rather than Zstandard's default of 3, because the
  * compressor is most of what the emulation thread waits for and this is the good part of that
@@ -340,6 +333,251 @@ static CSTHeader MakeHeader(u64 title_id) {
  * migration.
  */
 constexpr int SaveStateCompressionLevel = 1;
+
+/**
+ * Capacity of the pipe between the emulation thread and the savestate worker.
+ *
+ * This is the whole peak-memory cost of writing in the background, and it is a constant: the
+ * producer blocks once the pipe is full, so a save moves ~310 MB through 8 MiB. Buffering the
+ * serialized form instead would need those 310 MB resident, which on a handheld already being
+ * killed for its footprint would trade a smoother frame for the exact failure the autosave is
+ * insurance against.
+ *
+ * Bigger buys very little. Serialization runs at ~2.66 GB/s and compression at level 1 at
+ * ~2.43 GB/s, so the producer only outruns the consumer by ~9%: the pipe spends the save full,
+ * and its capacity buys the emulation thread capacity/rate ~= 3 ms of head start. 8 MiB is chosen
+ * to be comfortably more than that crossover matters and still small enough to disappear next to
+ * the emulated system.
+ */
+constexpr std::size_t SaveStatePipeCapacity = 8 * 1024 * 1024;
+
+/// Chunk the worker moves between the pipe and the compressor
+constexpr std::size_t SaveStatePipeChunk = 64 * 1024;
+
+/**
+ * The producer half of a background write: a streambuf boost serializes into, which hands whole
+ * buffers to the pipe. Returns EOF once the worker has abandoned the pipe, which is what stops
+ * the emulation thread from blocking forever behind a failed write.
+ */
+class PipeOutputStreamBuf final : public std::streambuf {
+public:
+    explicit PipeOutputStreamBuf(Common::BoundedBytePipe& pipe_)
+        : pipe{pipe_}, buffer(SaveStatePipeChunk) {
+        setp(buffer.data(), buffer.data() + buffer.size());
+    }
+
+protected:
+    int_type overflow(int_type ch) override {
+        if (!Push()) {
+            return traits_type::eof();
+        }
+        if (!traits_type::eq_int_type(ch, traits_type::eof())) {
+            *pptr() = traits_type::to_char_type(ch);
+            pbump(1);
+        }
+        return traits_type::not_eof(ch);
+    }
+
+    int sync() override {
+        return Push() ? 0 : -1;
+    }
+
+private:
+    bool Push() {
+        const auto count = static_cast<std::size_t>(pptr() - pbase());
+        if (count == 0) {
+            return true;
+        }
+        if (!pipe.Write(std::span<const u8>{reinterpret_cast<const u8*>(buffer.data()), count})) {
+            return false;
+        }
+        setp(buffer.data(), buffer.data() + buffer.size());
+        return true;
+    }
+
+    Common::BoundedBytePipe& pipe;
+    std::vector<char> buffer;
+};
+
+/**
+ * A savestate write whose compression and file I/O happen on a worker thread, leaving only the
+ * serialization on the emulation thread.
+ *
+ * The safety property that makes this sound is that the worker never sees the System. Everything
+ * it holds is a copy: two paths, a header, and bytes already taken out of the emulated machine.
+ * So once the emulation thread has finished serializing, the guest may run again immediately --
+ * there is nothing left for it to race with.
+ *
+ * The tmp-then-rename is unchanged and still belongs to the worker, so the guarantee it carries
+ * is the same as before: a process killed at any point during the write leaves the previous state
+ * in that slot untouched, and at worst an orphaned .tmp beside it. The window is longer now,
+ * because it lasts past the point where the emulation thread moved on.
+ */
+class BackgroundSaveStateWrite {
+public:
+    BackgroundSaveStateWrite(std::string temp_path_, std::string final_path_, CSTHeader header_)
+        : temp_path{std::move(temp_path_)}, final_path{std::move(final_path_)}, header{header_},
+          pipe{SaveStatePipeCapacity} {
+        worker = std::thread{[this] { Run(); }};
+    }
+
+    ~BackgroundSaveStateWrite() {
+        pipe.Abort();
+        if (worker.joinable()) {
+            worker.join();
+        }
+    }
+
+    Common::BoundedBytePipe& Pipe() {
+        return pipe;
+    }
+
+    /// Producer is done; the worker drains what is left and completes the file
+    void FinishProducing() {
+        pipe.Close();
+    }
+
+    /// Tells the worker to give up, for a producer that failed part-way
+    void Abandon() {
+        pipe.Abort();
+    }
+
+    /// Joins the worker and rethrows whatever it failed with
+    void Wait() {
+        if (worker.joinable()) {
+            worker.join();
+        }
+        if (error) {
+            auto raised = error;
+            error = nullptr;
+            std::rethrow_exception(raised);
+        }
+    }
+
+    /// Nanoseconds the worker spent, for the breakdown log
+    std::uint64_t ElapsedNs() const {
+        return elapsed_ns;
+    }
+
+private:
+    void Run() {
+        const auto begin = std::chrono::steady_clock::now();
+        try {
+            FileUtil::IOFile file(temp_path, "wb");
+            if (!file) {
+                throw std::runtime_error("Could not open file " + temp_path);
+            }
+            if (file.WriteBytes(&header, sizeof(header)) != sizeof(header)) {
+                throw std::runtime_error("Could not write to file " + temp_path);
+            }
+            {
+                Common::Compression::ZSTDOutputStreamBuf compressor{
+                    [&file](std::span<const u8> chunk) {
+                        return file.WriteBytes(chunk.data(), chunk.size()) == chunk.size();
+                    },
+                    SaveStateCompressionLevel};
+                Common::Compression::ZSTDOutputStreamBuf::Stats stats;
+                const bool measuring = Settings::values.log_savestate_breakdown.GetValue();
+                if (measuring) {
+                    compressor.MeasureInto(&stats);
+                }
+                SCOPE_EXIT({
+                    if (measuring) {
+                        const double compress_ms = static_cast<double>(stats.compress_ns) / 1.0e6;
+                        const double write_ms = static_cast<double>(stats.sink_ns) / 1.0e6;
+                        LOG_INFO(Core,
+                                 "SAVEBREAKDOWN compress {:.1f} ms | write {:.1f} | in {} B | "
+                                 "out {} B | ratio {:.1f}",
+                                 compress_ms, write_ms, stats.bytes_in, stats.bytes_out,
+                                 stats.bytes_out > 0 ? static_cast<double>(stats.bytes_in) /
+                                                           static_cast<double>(stats.bytes_out)
+                                                     : 0.0);
+                    }
+                });
+                std::ostream out{&compressor};
+                std::vector<u8> chunk(SaveStatePipeChunk);
+                while (true) {
+                    const std::size_t count = pipe.Read(chunk);
+                    if (count == 0) {
+                        break;
+                    }
+                    out.write(reinterpret_cast<const char*>(chunk.data()),
+                              static_cast<std::streamsize>(count));
+                    if (!out) {
+                        throw std::runtime_error("Could not write the save state");
+                    }
+                }
+                if (pipe.Aborted()) {
+                    // The producer failed, or something abandoned us; leave no half-written file
+                    throw std::runtime_error("Save state was abandoned");
+                }
+                if (!compressor.Finish()) {
+                    throw std::runtime_error("Could not compress the save state");
+                }
+            }
+            file.Close();
+            // Rename replaces on every native filesystem; only fall back to delete-then-rename
+            // for backends that refuse to overwrite, so the old state is kept as long as possible
+            if (!FileUtil::Rename(temp_path, final_path) &&
+                !(FileUtil::Delete(final_path) && FileUtil::Rename(temp_path, final_path))) {
+                throw std::runtime_error("Could not move " + temp_path + " to " + final_path);
+            }
+        } catch (const std::exception& e) {
+            // Logged here as well as stored, because the thread that asked for this save has
+            // already moved on and may not come back to collect the error for a long time
+            LOG_ERROR(Core, "Save state write to {} failed: {}", final_path, e.what());
+            error = std::current_exception();
+            // Release a producer still blocked on a full pipe, or it waits for a worker that has
+            // already given up
+            pipe.Abort();
+            FileUtil::Delete(temp_path);
+        }
+        elapsed_ns =
+            static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                           std::chrono::steady_clock::now() - begin)
+                                           .count());
+    }
+
+    std::string temp_path;
+    std::string final_path;
+    CSTHeader header;
+    Common::BoundedBytePipe pipe;
+    std::thread worker;
+    std::exception_ptr error;
+    std::atomic<std::uint64_t> elapsed_ns{0};
+};
+
+/**
+ * The one write that may be in flight, and the lock that keeps it to one.
+ *
+ * The lock is held across the join in WaitForSaveStateWrite so that two callers cannot both
+ * decide the pipe is free: the emulation thread reaches this from SaveState and LoadState, and a
+ * frontend's UI thread reaches it when it needs the state to be durable before the process may
+ * die. The worker never takes this lock, so holding it across a join cannot invert.
+ */
+std::mutex pending_write_mutex;
+std::unique_ptr<BackgroundSaveStateWrite> pending_write;
+
+static CSTHeader MakeHeader(u64 title_id) {
+    CSTHeader header{};
+    header.filetype = header_magic_bytes;
+    header.program_id = title_id;
+    std::string rev_bytes;
+    CryptoPP::StringSource ss(Common::g_scm_rev, true,
+                              new CryptoPP::HexDecoder(new CryptoPP::StringSink(rev_bytes)));
+    std::memcpy(header.revision.data(), rev_bytes.data(),
+                std::min(rev_bytes.size(), sizeof(header.revision)));
+    header.time = std::chrono::duration_cast<std::chrono::seconds>(
+                      std::chrono::system_clock::now().time_since_epoch())
+                      .count();
+    const std::string build_fullname = Common::g_build_fullname;
+    std::memcpy(header.build_name.data(), build_fullname.c_str(),
+                std::min(build_fullname.length(), sizeof(header.build_name) - 1));
+    const std::string build_version = Common::g_build_version;
+    std::memcpy(header.build_version.data(), build_version.c_str(),
+                std::min(build_version.length(), sizeof(header.build_version) - 1));
+    return header;
+}
 
 /**
  * Serializes the system through a Zstandard stream into `sink`, chunk by chunk. A New 3DS
@@ -415,6 +653,10 @@ void System::SaveState(u32 slot) const {
         }
     }
 
+    // One write at a time. Two would race for the same temporary file, and the second would be
+    // serializing a machine the first had not finished reading.
+    WaitForSaveStateWrite();
+
     const u64 movie_id = movie.GetCurrentMovieID();
     const auto path = GetSaveStatePath(title_id, movie_id, slot);
     if (!FileUtil::CreateFullPath(path)) {
@@ -424,32 +666,68 @@ void System::SaveState(u32 slot) const {
     // Written under a temporary name and moved into place once complete, so a save that fails
     // part-way (or a process killed during it) leaves the previous state in that slot intact
     const auto temp_path = path + ".tmp";
-    {
-        FileUtil::IOFile file(temp_path, "wb");
-        if (!file) {
-            throw std::runtime_error("Could not open file " + temp_path);
+    auto write = std::make_unique<BackgroundSaveStateWrite>(temp_path, path, MakeHeader(title_id));
+
+    // Only the serialization happens here. Everything the worker holds from this point is a copy,
+    // so the caller may let the guest run again the moment this returns.
+    const auto begin = std::chrono::steady_clock::now();
+    try {
+        PipeOutputStreamBuf producer{write->Pipe()};
+        std::ostream stream{&producer};
+        {
+            oarchive oa{stream};
+            oa&* this;
         }
-        const CSTHeader header = MakeHeader(title_id);
-        if (file.WriteBytes(&header, sizeof(header)) != sizeof(header)) {
-            throw std::runtime_error("Could not write to file " + temp_path);
+        stream.flush();
+        if (!stream) {
+            throw std::runtime_error("Could not write the save state");
         }
+    } catch (...) {
+        // Stop the worker before unwinding, or it waits for bytes that are never coming
+        write->Abandon();
         try {
-            SerializeCompressed(*this, [&file](std::span<const u8> chunk) {
-                return file.WriteBytes(chunk.data(), chunk.size()) == chunk.size();
-            });
+            write->Wait();
         } catch (...) {
-            file.Close();
-            FileUtil::Delete(temp_path);
-            throw;
+            // The worker's own complaint is a consequence of ours; ours is the useful one
         }
+        throw;
     }
-    // Rename replaces on every native filesystem; only fall back to delete-then-rename for
-    // backends that refuse to overwrite, so the old state is kept as long as possible
-    if (!FileUtil::Rename(temp_path, path) &&
-        !(FileUtil::Delete(path) && FileUtil::Rename(temp_path, path))) {
-        FileUtil::Delete(temp_path);
-        throw std::runtime_error("Could not move " + temp_path + " to " + path);
+    write->FinishProducing();
+
+    if (Settings::values.log_savestate_breakdown.GetValue()) {
+        const double serialize_ms =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin)
+                .count();
+        LOG_INFO(Core, "SAVESTALL emulation thread blocked {:.1f} ms | piped {} B", serialize_ms,
+                 write->Pipe().BytesWritten());
     }
+
+    std::scoped_lock lock{pending_write_mutex};
+    pending_write = std::move(write);
+}
+
+void WaitForSaveStateWrite() {
+    std::scoped_lock lock{pending_write_mutex};
+    if (!pending_write) {
+        return;
+    }
+    auto write = std::move(pending_write);
+    write->Wait();
+}
+
+void FlushSaveStateWrite() noexcept {
+    try {
+        WaitForSaveStateWrite();
+    } catch (const std::exception& e) {
+        LOG_ERROR(Core, "Save state write failed: {}", e.what());
+    } catch (...) {
+        LOG_ERROR(Core, "Save state write failed");
+    }
+}
+
+bool IsSaveStateWriteInFlight() {
+    std::scoped_lock lock{pending_write_mutex};
+    return pending_write != nullptr;
 }
 
 void System::LoadState(u32 slot) {
@@ -462,6 +740,11 @@ void System::LoadState(u32 slot) {
     if (room_member && room_member->IsConnected()) {
         throw std::runtime_error("Unable to load while connected to multiplayer");
     }
+
+    // A state still being written is not on disk yet -- the rename has not happened -- so loading
+    // one would read whatever the slot held before it. Wait for it, and let its failure surface
+    // here rather than silently loading the wrong thing.
+    WaitForSaveStateWrite();
 
     const u64 movie_id = movie.GetCurrentMovieID();
     const auto path = GetSaveStatePath(title_id, movie_id, slot);

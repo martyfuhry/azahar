@@ -1,5 +1,6 @@
 add_executable(tests
     common/bit_field.cpp
+    common/bounded_byte_pipe.cpp
     common/file_util.cpp
     common/param_package.cpp
     common/zstd_stream.cpp
