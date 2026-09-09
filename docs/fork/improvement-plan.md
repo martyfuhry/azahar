@@ -313,3 +313,35 @@ Integration: each agent rebases on `thor/main` before handing over; the coordina
 - No netplay/room/Artic changes; no changes to upstream update-checker/telemetry beyond leaving them off; no Play-flavor work.
 - Nothing is pushed to `upstream`; `origin` only when Marty asks. AI-POLICY.md means none of this goes upstream, so no effort is spent on upstream-compatibility.
 - Not in scope: new features unrelated to performance, memory, lifecycle or QoL (e.g. UI redesign, new applets, scripting).
+
+---
+
+## Found after rc2 (2026-09-09), not yet scheduled
+
+These came out of the Majora's Mask texture-pack investigation
+(`docs/fork/research/majoras-mask-on-thor.md`) and the texture-filter crash hunt
+(`docs/fork/research/texture-filter-crash.md`). Both touch code that shipped in rc2.
+
+- **`CustomTexture::data` is never freed.** There is no unload path anywhere in
+  `src/video_core/custom_textures/`. Every custom texture decoded stays resident for the life
+  of the process, so memory only ever climbs toward the pack's full decoded size (29 GiB for a
+  4K pack, 7.2 GiB for a 1080p one). This is what makes texture packs unusable on a handheld
+  rather than merely expensive. Fixing it means an eviction policy for the custom-texture
+  cache, in the same shape as the surface-cache budget in Tier 3 M-7.
+- **The oversized-upload threshold is 16 MiB, not 64 MiB.** `ONE_SHOT_STAGING_DIVISOR = 4`
+  divides the 64 MiB upload ring, so the one-shot staging fallback added in rc1 (M-1) is
+  reached far more often than assumed — 164 of 4,513 textures in one pack cross it. That path
+  has never been exercised in the field and ends in `UNREACHABLE()` if the allocator cannot
+  supply a large host-visible buffer. Re-read M-1's risk assessment with the correct number.
+- **The preload budget overshoots by one texture.** `custom_tex_manager.cpp:204-234` checks
+  the budget *after* adding, so it can exceed it by up to the size of a single texture
+  (256 MiB in the worst case seen). This is plan item M-6, previously judged latent; enabling
+  preload makes it reachable.
+- **Custom textures are reported crashing under Vulkan**, including from an AYN Thor Max with
+  16 GB (azahar-emu/azahar#1308, #2118). The OpenGL half of that fix is in this tree
+  (`c07f2cc96`); the Vulkan half is not addressed anywhere.
+- **The texture-filter crash is upstream, not ours**, but the fork widens it: 12 crashes in 20
+  attempts on the pre-fork baseline against 19 in 20 on rc1. Four genuine lifetime bugs were
+  found and fixed on `fix/texture-filter-crash` without curing it; they are parked unmerged
+  because they are unverified renderer changes. The next thread is descriptor sets and
+  attachment image views in `BlitHelper::FilterPass`.
