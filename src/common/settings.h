@@ -56,24 +56,40 @@ enum class AutoSaveMode : u32 {
  * a state stalls the emulation thread for its whole duration, so the interval is the knob that
  * trades a visible hitch against how much play a kill can take with it.
  *
- * The default is five minutes, from measurement rather than feel.
+ * The default is five minutes. Expect a save of a large title on the device to freeze the
+ * picture for something approaching a second.
  *
- * Host, azahar-bench --save-after, median of three runs: Animal Crossing New Leaf 346 ms,
- * Majora's Mask 3D 362 ms, Hyrule Warriors Legends 292 ms. Device (AYN Thor, Pokemon X, 7.3 MB
- * state), from Begin-save to Save-completed deltas in a logcat capture: 281, 374, 375, 393 ms
- * while the screen was on, and 1756 and 1716 ms for the two saves during which the screen went
- * off mid-write. So a phone core is *not* systematically slower than the host here -- the awake
- * figures sit on top of the host ones -- and the second-and-a-half outliers belong to the suspend
- * path, where SCREEN_OFF arrives about half a second into the save and the rest is spent with the
- * device powering memory down underneath it (PASR segment offlining is visible in the same
- * window). A periodic save runs with the screen on and should cost what the awake saves cost.
+ * Host, azahar-bench --save-after, median of three runs: Hyrule Warriors Legends 292 ms for a
+ * 9.6 MB state, Animal Crossing New Leaf 346 ms for 13.7 MB, Majora's Mask 3D 362 ms for 21.4 MB.
+ * Device (AYN Thor, Pokemon X, 7.3 MB state), Begin-save to Save-completed out of a logcat
+ * capture: 281, 374, 375, 393 ms with the screen on, and 1756 and 1716 ms for two saves during
+ * which the screen went off mid-write.
  *
- * That still makes it a ~0.4 s freeze of the picture, not a dropped frame. Five minutes puts it
- * near a tenth of a percent of wall time; one minute would be five times that and a visible freeze
- * every minute, which answers a lost-save complaint with a stutter complaint. The generation ring
- * and the stale offer are what actually stop a save being lost, so this interval is a convenience
- * against a hard kill mid-play and does not need to be aggressive to earn its place. Three
- * minutes is defensible and is one tap away in the picker.
+ * Those two sets look like they overlap. They do not: the device state is 7.3 MB and the host
+ * ones are 9.6-21.4 MB, so the raw milliseconds are not comparable. Per megabyte the device
+ * manages ~19.5 MB/s against the host's 33-59 MB/s, and even against the host's own cost model
+ * (a fit over the two extreme host sizes gives ~234 ms fixed plus ~6 ms/MB, which predicts 278 ms
+ * for a 7.3 MB state) the device's 374 ms is 1.34x slower. The device is slower; the earlier
+ * claim here that it was not was an artefact of comparing a small state against larger ones.
+ *
+ * Extrapolating Majora's Mask 3D, 21.4 MB and a title actually played on this device: ~1.1 s if
+ * cost is proportional to size, ~0.5 s if the large fixed component the host fit shows also
+ * exists on the device. Which of those holds is unmeasured -- it needs a second state size on
+ * device -- so plan against the pessimistic end.
+ *
+ * Five minutes stands even so: ~1 s every 300 s is around a third of a percent of wall time, and
+ * one minute would be five times that with a visible freeze every minute, which answers a
+ * lost-save complaint with a stutter complaint. The generation ring and the stale offer are what
+ * actually stop a save being lost, so this interval is a convenience against a hard kill mid-play
+ * and does not need to be aggressive to earn its place. Three minutes is defensible and is one
+ * tap away in the picker.
+ *
+ * The 1.7 s outliers are the suspend path, not saving: SCREEN_OFF arrives about half a second
+ * into each of them and the rest is spent with the device powering memory down underneath the
+ * write (PASR segment offlining is in the same log window). A periodic save normally runs with
+ * the screen on. It is not immune -- a sleep press landing inside a save window catches the same
+ * tail, which for a 0.4 s save at a five minute interval is on the order of one sleep press in a
+ * thousand -- but a freeze on a screen that has just gone dark is not one anybody sees.
  *
  * Not yet measured: a save taken during active play. Every device figure above is a pause-time
  * save, because no build with this setting has run on a device yet. The core logs "Save completed

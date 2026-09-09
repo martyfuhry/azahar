@@ -462,11 +462,24 @@ static std::chrono::steady_clock::duration PeriodicAutoSaveInterval() {
 
 /**
  * Queues an autosave once the periodic interval has elapsed, for FlushAutoSave() to carry out on
- * this same thread a moment later. Uses the ordinary request counter rather than a second path,
- * so a periodic save and one the activity asked for on its way to the background collapse into
- * one write instead of two. Unlike the UI thread it needs no paused_mutex around the increment:
- * the thread bumping the counter is the thread that services it, so there is no parked reader to
- * miss the wake-up, and the counter is atomic against the UI thread's own increments.
+ * this same thread a moment later. Uses the ordinary request counter rather than a second path.
+ * Unlike the UI thread it needs no paused_mutex around the increment: the thread bumping the
+ * counter is the thread that services it, so there is no parked reader to miss the wake-up, and
+ * the counter is atomic against the UI thread's own increments.
+ *
+ * Two requests collapse into one write only when both increments land before FlushAutoSave()
+ * snapshots the counter. That is deliberate -- a request arriving mid-save must not be swallowed,
+ * because the state it wants saved is newer than the one being written -- but it means the
+ * shutdown path can now perform two saves back to back where it used to perform one: a periodic
+ * save already in flight, then the one the activity asks for on its way out. Against onStop's
+ * AUTOSAVE_WAIT_MS budget of 4 s the bad case is a periodic save that caught the suspend tail
+ * (~1.7 s) followed by a pause save (~0.4 s, more for a large state), so roughly 2-3 s. That
+ * still fits, but with far less headroom than the single save it replaced, and the headroom
+ * shrinks as state size grows. Overrunning the budget is not itself a loss -- awaitAutoSave()
+ * warns and lets the lifecycle proceed, and SaveState's tmp-then-rename leaves the previous
+ * generation intact if the process dies mid-write -- it only forfeits the newest save. Whether
+ * 4 s is still the right number wants a device to answer; raising it trades that forfeit against
+ * blocking onStop for longer, which is its own risk.
  *
  * `deadline` is carried by the caller and is reset by RestartPeriodicAutoSave() whenever the
  * emulation thread starts or resumes, so time spent paused (during which the frontend has
