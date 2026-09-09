@@ -61,7 +61,7 @@ build/bin/Release/azahar-bench --frames 600 --save-after 300 /path/to/rom   # ad
 build/bin/Release/azahar-bench --movie input.ctm /path/to/rom                # deterministic input
 ```
 
-Android (Gradle, from `src/android/`): `./gradlew assembleVanillaRelease` or `assembleGooglePlayRelease`; the NDK build reuses the same CMake tree. Kotlin formatting: `tools/check-kotlin-formatting.sh` / `tools/fix-kotlin-formatting.sh` (ktlint).
+Android (Gradle, from `src/android/`; this machine needs `JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64` and `ANDROID_HOME=/usr/local/lib/android/sdk`, and ccache is not installed): the fork's own flavor is `thor` (`assembleThorRelease -Pandroid.injected.testOnly=false`, package `org.azahar_emu.azahar.thor`, installs alongside official Azahar); upstream flavors: `./gradlew assembleVanillaRelease` or `assembleGooglePlayRelease`; the NDK build reuses the same CMake tree. Kotlin formatting: `tools/check-kotlin-formatting.sh` / `tools/fix-kotlin-formatting.sh` (ktlint).
 
 The full CI toolchain lives in the Docker image `opensauce04/azahar-build-environment`; `tools/enter-docker-dev-container.sh` mounts the repo at `/mnt` in it.
 
