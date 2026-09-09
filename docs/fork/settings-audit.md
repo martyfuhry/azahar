@@ -567,6 +567,28 @@ tests are straightforward — the tier tables are data and the algorithm is a pu
    `upstream-issues/12-android-accurate-multiplication-hardcoded-off.md`. It keeps its tier-2
    entry only as cover for devices still running the old default until the fix ships.
 
+### What shipped, and the one thing that changed on contact with the code
+
+Built on `feat/settings-repair` as `utils/repair/{SettingsRepairPlanner,SettingsRepairProfile,
+ForkProfileRecord,ForkProfileStore}.kt` plus `utils/SettingsRepair.kt`, with the tiers, the
+provenance rule, the no-provenance rule and the sidecar exactly as specified above. The planner is
+a pure function of (live config, record) and is unit tested on the JVM; both `ThorDefaults` bugs
+are fixed; the pass runs on every launch rather than per `versionCode`, which is simpler and
+removes the "the flag says done but it never ran" failure mode the original bug was made of.
+
+**The one deviation.** §3 asks for `shaders_accurate_mul` to become an `#ifdef ANDROID` default in
+`settings.h`. That shape was chosen when the plan was to *keep* Android's `false`, so that the
+platforms visibly differed. The device reproduction settled the value at `true` for Android too,
+and an `#ifdef` whose two arms both say `true` documents nothing — it hides that the platforms
+agree. What shipped is the single declaration with the reasoning, the evidence and the pointer to
+the `#ifdef` idiom in a comment above it, so the decision is still where a contributor would look.
+
+**A consequence worth knowing.** Once that default is fixed, *every* tier-2 opinion equals the
+Android-effective default, so the first pass on any existing configuration makes no tier-2 writes
+at all: it only records ownership or cedes. Tier 2's value is entirely prospective — it is what
+lets a future change of mind reach a key we still own. The first pass is therefore much smaller
+and safer than this section implies, and tier 1 is the only thing that repairs anything today.
+
 ---
 
 ## 6. Should some of this not be user-facing at all?
