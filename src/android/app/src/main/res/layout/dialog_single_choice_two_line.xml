@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  A single-choice dialog row that can carry an explanation under its title. The stock
+  Material row is one line, which is no use for a setting whose whole point is that the
+  option names alone do not tell a player what they are choosing.
+
+  It is a CheckedTextView with @android:id/text1 so a plain ArrayAdapter can drive it and
+  AlertDialog's CHOICE_MODE_SINGLE can tick it.
+-->
+<CheckedTextView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@android:id/text1"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:minHeight="?android:attr/listPreferredItemHeightSmall"
+    android:paddingStart="24dp"
+    android:paddingEnd="24dp"
+    android:paddingTop="12dp"
+    android:paddingBottom="12dp"
+    android:gravity="center_vertical"
+    android:textAlignment="viewStart"
+    android:textAppearance="?attr/textAppearanceBodyLarge"
+    android:textColor="?attr/colorOnSurface"
+    android:checkMark="?android:attr/listChoiceIndicatorSingle" />

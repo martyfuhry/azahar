@@ -10,11 +10,9 @@ import org.citra.citra_emu.BuildConfig
 import org.citra.citra_emu.CitraApplication
 import org.citra.citra_emu.display.ScreenLayout
 import org.citra.citra_emu.display.SecondaryDisplayLayout
-import org.citra.citra_emu.features.settings.model.AbstractSetting
 import org.citra.citra_emu.features.settings.model.BooleanSetting
 import org.citra.citra_emu.features.settings.model.IntSetting
 import org.citra.citra_emu.features.settings.model.Settings
-import org.citra.citra_emu.features.settings.utils.SettingsFile
 
 /**
  * The out-of-the-box configuration for the AYN Thor, whose two built-in panels (6" 1080x1920
@@ -22,8 +20,8 @@ import org.citra.citra_emu.features.settings.utils.SettingsFile
  * a fresh install boots both 3DS screens onto the top panel at 1x, which is exactly the
  * hand-configuration this fork exists to remove.
  *
- * The profile is written through the normal settings path ([Settings.saveSetting], i.e. the
- * config.ini writer), so the values are indistinguishable from ones the user picked in the
+ * The profile is written through [SettingsProfile], the same path the graphics presets use,
+ * so the values are indistinguishable from ones the user picked in the
  * settings menu and are picked up by [org.citra.citra_emu.display.SecondaryDisplay] the next
  * time an EmulationActivity loads settings. It is therefore applied at application/first-run
  * time, before any emulation starts, rather than from inside a running game.
@@ -48,9 +46,6 @@ object ThorDefaults {
 
     private data class KnownDevice(val manufacturer: String, val model: String)
 
-    /** A single setting the profile owns, paired with the write that sets its Thor value. */
-    private class ProfileEntry(val setting: AbstractSetting, val write: () -> Unit)
-
     /**
      * The profile. Values that already match the stock default are still listed: the point is
      * that a Thor is configured the same way whatever the upstream defaults happen to be, and
@@ -70,26 +65,9 @@ object ThorDefaults {
         ProfileEntry(BooleanSetting.SWAP_SCREEN) {
             BooleanSetting.SWAP_SCREEN.boolean = false
         },
-        // Graphics: Vulkan on the Adreno 740, 4x internal resolution, both shader caches on.
+        // Vulkan on the Adreno 740.
         ProfileEntry(IntSetting.GRAPHICS_API) {
             IntSetting.GRAPHICS_API.int = GRAPHICS_API_VULKAN
-        },
-        ProfileEntry(IntSetting.RESOLUTION_FACTOR) {
-            IntSetting.RESOLUTION_FACTOR.int = RESOLUTION_FACTOR
-        },
-        ProfileEntry(BooleanSetting.DISK_SHADER_CACHE) {
-            BooleanSetting.DISK_SHADER_CACHE.boolean = true
-        },
-        ProfileEntry(BooleanSetting.ASYNC_SHADERS) {
-            BooleanSetting.ASYNC_SHADERS.boolean = true
-        },
-        // No texture filter: every filter multiplies sampled-texture memory by the square of
-        // the resolution factor, and 4x is already the memory ceiling on the 8 GB SKU.
-        ProfileEntry(IntSetting.TEXTURE_FILTER) {
-            IntSetting.TEXTURE_FILTER.int = TEXTURE_FILTER_NONE
-        },
-        ProfileEntry(IntSetting.TEXTURE_SAMPLING) {
-            IntSetting.TEXTURE_SAMPLING.int = TEXTURE_SAMPLING_GAME_CONTROLLED
         },
         ProfileEntry(BooleanSetting.VSYNC) {
             BooleanSetting.VSYNC.boolean = false
@@ -115,14 +93,14 @@ object ThorDefaults {
         ProfileEntry(IntSetting.PERF_LOG_INTERVAL) {
             IntSetting.PERF_LOG_INTERVAL.int = 0
         }
-    )
+        // Everything that decides how a game looks comes from the graphics preset instead, so
+        // there is one definition of "4x, no texture filter, shader caches on" and it works out
+        // the resolution from the panel rather than assuming a Thor-sized one.
+    ) + GraphicsPresets.profileFor(GraphicsPreset.BEST_LOOKING)
 
     // Values that have no Kotlin enum to name them; see src/common/settings.h.
     private const val GRAPHICS_API_VULKAN = 2
-    private const val TEXTURE_FILTER_NONE = 0
-    private const val TEXTURE_SAMPLING_GAME_CONTROLLED = 0
     private const val AUTOSAVE_MODE_ALWAYS = 2
-    private const val RESOLUTION_FACTOR = 4
     private const val FRAME_LIMIT = 100
     private const val CPU_CLOCK_PERCENTAGE = 100
 
@@ -173,24 +151,12 @@ object ThorDefaults {
      * (the settings action) every value in the profile is written.
      */
     fun apply(settings: Settings, force: Boolean): Int {
-        val existing = if (force) {
-            null
-        } else {
-            // Also syncs the in-memory settings with the file, which nothing has read yet on
-            // the first-run path.
-            SettingsFile.readFile(SettingsFile.FILE_NAME_CONFIG)
-        }
+        val applied = SettingsProfile.write(settings, profile(), force)
 
-        val applied = mutableListOf<String>()
-        for (entry in profile()) {
-            val key = entry.setting.key ?: continue
-            val section = entry.setting.section ?: continue
-            if (existing != null && existing[section]?.getSetting(key) != null) {
-                continue
-            }
-            entry.write()
-            settings.saveSetting(entry.setting, SettingsFile.FILE_NAME_CONFIG)
-            applied.add("$key=${entry.setting.valueAsString}")
+        // Claim the preset only if the configuration really is it: on the non-forcing first-run
+        // pass some graphics keys may have been left alone because config.ini already had them.
+        if (GraphicsPresets.matches(GraphicsPreset.BEST_LOOKING)) {
+            GraphicsPresets.active = GraphicsPreset.BEST_LOOKING
         }
 
         PreferenceManager.getDefaultSharedPreferences(CitraApplication.appContext)
