@@ -22,7 +22,7 @@
 
 set -euo pipefail
 
-PKG=${PKG:-org.azahar_emu.azahar}
+PKG=${PKG:-org.azahar_emu.azahar.thor}
 ACTIVITY=${ACTIVITY:-org.citra.citra_emu.activities.EmulationActivity}
 ROM=${ROM:-/storage/emulated/0/roms/3ds/acnl.3ds}
 TOP=${TOP:-15}

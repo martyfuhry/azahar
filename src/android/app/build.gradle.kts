@@ -183,6 +183,12 @@ android {
             versionNameSuffix = "-googleplay"
             applicationId = "io.github.lime3ds.android"
         }
+        // The fork's own package, so it installs alongside official Azahar builds
+        register("thor") {
+            dimension = "version"
+            versionNameSuffix = "-thor"
+            applicationId = "org.azahar_emu.azahar.thor"
+        }
     }
 
     externalNativeBuild {
