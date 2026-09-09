@@ -83,8 +83,8 @@ freshness (unique remote path, deleted first, stderr surfaced, size checked on d
 
 Raw captures, scripts and both APKs:
 `~/Development/azahar-builds/measure-melonds-2026-09-09/` — `out-stock/`, `out-fork/`, `out-func/`,
-`out-sleep/`, `shots/`, `numbers.log`, `sleeptest.log`, the two build logs, and
-`mds.sh` / `session.sh` / `pressure.sh` / `sleeptest.sh` / `hog.c`.
+`out-sleep/`, `out-restore/`, `shots/`, `numbers.log`, `sleeptest.log`, the two build logs, and
+`mds.sh` / `session.sh` / `pressure.sh` / `sleeptest.sh` / `b1.sh` / `hog.c`.
 
 ---
 
@@ -259,6 +259,8 @@ Installed from `~/Development/azahar-builds/melonds-thor-c86e8147.apk` with plai
 | **Resume in place on a re-sent launch intent** (commit `f5f448ae`, upstream #1659) | **PASS.** Re-sending the exact launch intent for the running ROM produced `"intent has been delivered to currently running top-most instance"`, the same pid, and the cutscene carried on. **No "Stop emulation and load new ROM?" dialog.** `shots/thor-17.png` |
 | 5× HOME → relaunch | 5/5 same pid, no dialog, no crash, `oom_score_adj=50` while backgrounded |
 | Crashes in any of it | none in logcat |
+| **Kill (accepted reason) → relaunch restores the session** | **PASS** — silent automatic restore in 1.09 s, checkpoint consumed, `spp.sav` byte-identical (details below) |
+| **Review finding B1: a normal wake clears the checkpoint** | **not measured** — needs a human unlock at the moment of the wake; staging was destroyed by another agent's force-stop at 12:17:47 and re-staging was declined (details below) |
 
 ### The checkpoint: written on screen-off, exactly as designed
 
@@ -289,43 +291,95 @@ branch only when `isScreenOff()`, i.e. `ACTION_SCREEN_OFF` was observed or
 reach that path from `adb` without turning the screen off: `ACTION_SCREEN_OFF` is a protected
 broadcast and `am broadcast` from the shell uid cannot send it.
 
-### Kill and restore — set up, awaiting a screen unlock
+### Kill and restore — PASS, verified end to end
 
-Two things about this phone shape what could be finished unattended:
+Two things about this phone shaped how this had to be run:
 
 * The fork's FGS process is **very hard to kill on purpose**. 4 GiB, 8 GiB and 12 GiB memory hogs
   against an 11.4 GiB device all left it alive. That is the feature working, but it means a genuine
   LMK kill of the *fork* could not be induced inside the device window. The `LOW_MEMORY` kill in
   this document is of the *stock* build, which is the right build to prove the mechanism on.
 * **One `KEYCODE_SLEEP` re-engages this phone's secure PIN keyguard** (`deviceLocked=1`,
-  `wm dismiss-keyguard` cannot clear it). Behind the keyguard `EmulatorActivity.onResume()` does
-  not run, so neither the restore prompt nor the wake path can be exercised.
+  `wm dismiss-keyguard` cannot clear it), and behind the keyguard `EmulatorActivity.onResume()`
+  does not run. Every step below that needed the screen usable was done inside a window Marty
+  opened by unlocking the phone by hand.
 
-The kill-and-restore round trip is therefore **staged and paused**, not skipped. The device is
-currently in exactly this state:
+The round trip that was run, on the debuggable fork build `me.magnum.melonds.dev` @ `c86e8147`:
 
-* fork build `c86e8147` installed as `me.magnum.melonds.dev`;
-* its process was killed at **11:02:19** with `reason=4 (APP CRASH(EXCEPTION))`, rss 104 MB — a
-  cause `RecoveryPolicy` accepts. `am force-stop` and `am kill` were deliberately **not** used;
-  they produce `USER_REQUESTED`, which `shouldDiscardRecovery()` explicitly throws away, so they
-  would have proved nothing;
-* `session.json` still reads `sleeping:true` with the valid 19.3 MB checkpoint, and
-  `automaticRecoveryAttempted:false`.
+1. Launch the game; `KEYCODE_SLEEP` → checkpoint written (see above).
+2. Kill the process at **11:02:19** with `reason=4 (APP CRASH(EXCEPTION))`, rss 104 MB — a cause
+   `RecoveryPolicy` accepts. `am force-stop` and `am kill` were deliberately **not** used: they
+   produce `USER_REQUESTED`, which `shouldDiscardRecovery()` explicitly throws away, so they would
+   have proved nothing.
+3. Relaunch at 11:48:54, with the phone unlocked.
 
-By `canAutomaticallyRestore()` (`RecoveryPolicy.kt:59-79`) that combination — sleeping, checkpoint
-valid, `checkpointCreatedAt >= sleepStartedAt`, exit reason not in {USER_REQUESTED, USER_STOPPED,
-UNKNOWN} — should produce an **automatic restore with no prompt** on the next launch. That
-prediction has **not been verified on the device** and is not claimed as a result.
+**Result: a silent automatic restore, with no prompt, in 1.09 s.**
 
-**What is still not measured**, stated rather than estimated:
+```
+11:48:54.636  EmulatorRecovery: automatic_recovery_started
+11:48:55.723  EmulatorRecovery: session_started
+11:48:55.723  EmulatorRecovery: recovery_restored  {"sessionType":"ROM","automatic":true}
+```
 
-* whether the relaunch restores the session (silently, by prompt, or not at all) — **not measured**;
-* **review finding B1** (a wake with no kill must delete the checkpoint, so a later kill cannot
-  offer a stale restore that would rewind the `.sav`) — **not measured**; it needs
-  `onResume()` to run, which needs the keyguard gone;
-* the `.sav` file was byte-identical before and after everything above
-  (`edd4ababb0ba20c7d9cc26f01347fd3f84968b137d05ab7bddb0f2d0f00a2ac5`), so nothing in this pass
-  rewound a save — but that is not yet a test of the restore path, because no restore has run.
+| Kill-and-restore check | Result |
+|---|---|
+| Restore behaviour | **silent automatic restore**, no dialog — as `canAutomaticallyRestore()` (`RecoveryPolicy.kt:59-79`) specifies for a sleeping session with a valid checkpoint and a non-user exit reason |
+| Time from launch intent to `recovery_restored` | 1.09 s |
+| Checkpoint consumed | yes — `checkpoint-1788965842711.mln` deleted, a fresh `session.json` written with `sleeping:false` |
+| **`spp.sav` after the restore** | **`edd4ababb0ba20c7d9cc26f01347fd3f84968b137d05ab7bddb0f2d0f00a2ac5` — byte-identical to before** |
+| Crash or ANR during any of it | none |
+
+**How this is known to be a restore and not a fresh boot.** The proof is the journal, not the
+pixels. The restored screen shows the title screen, which is *correct*: that `.dev` session was
+only 30 s past a cold boot when its checkpoint was taken, so the title screen is exactly the state
+that was captured. A fresh boot would look the same, so the screenshot (`shots/restore-01.png`)
+corroborates nothing on its own; `automatic_recovery_started` → `recovery_restored
+{"automatic":true}`, the consumed 19.3 MB checkpoint file and the rewritten session record are what
+carry the result. A restore from a visibly *distinct* game state was not run — the deep-cutscene
+session belonged to the `.thor` package, which is a different app id with its own recovery
+directory.
+
+**The save being untouched is the finding that matters**, because the review's blocking bug was a
+restore rewinding the `.sav`. It is a weaker demonstration than it could be, and worth saying so:
+the checkpoint here was taken 30 s after a cold boot and the game had written nothing to its `.sav`
+in between, so there was little for a restore to clobber. What is shown is that the restore path
+does not corrupt or truncate the file. What is *not* shown is the full hazard scenario — play,
+sleep, wake, play on, then die — which is what B1 below is about.
+
+### Review finding B1 — not measured
+
+**B1** is the fix for the one bug the adversarial review found in PR #1666: a checkpoint used to
+survive the sleep it was taken for, so a kill hours later could offer a stale restore, and taking
+it would roll the game's `.sav` back as well as the session. The fix ends the checkpoint when the
+sleep ends (`RecoverySession.finishDeviceSleep()`, `RecoveryPolicy.kt:97-112`, called from
+`markDeviceSleepResumed()`).
+
+Testing it means: game running → screen off (checkpoint written) → screen on and keep playing →
+the checkpoint must be **gone**. It was staged twice and completed neither time:
+
+* The wake half requires `EmulatorActivity.onResume()`, which cannot run behind this phone's PIN
+  keyguard — so it needs a human unlock at the moment of the wake, not before it.
+* On the second attempt the staging was destroyed by **another agent's `am force-stop` of
+  `me.magnum.melonds.dev` at 12:17:47**, which put a `USER_REQUESTED`/`FORCE STOP` record ahead of
+  the staged exit. `classifyPreviousExit()` takes the newest exit at or after `session.startedAt`,
+  and `shouldDiscardRecovery()` fires on exactly that reason, so the next launch would have deleted
+  the checkpoint down the **discard** path. The journal does distinguish the two — the wake path
+  appends `device_sleep_resumed` (`EmulatorRecoveryRepository.kt:167`), the discard path appends
+  `session_closed` (`:260`) — but with the discard predetermined, a launch could only have
+  confirmed the path that was never in doubt.
+
+Re-staging costs about two minutes of device time and one more human unlock. That was put to Marty
+and **declined**, on the grounds that he has not yet installed this build on the Thor, the fix is
+code-reviewed and argued correct, its failure mode needs a specific sequence rather than being
+something he would stumble into, and the phone had already been unlocked three times for this pass.
+If he adopts the build, B1 gets exercised in real use.
+
+**The run is left ready for whoever wants the answer.** `mm/b1.sh` in the raw-capture directory is
+a two-minute unattended run: it launches, sleeps the screen, asserts a fresh checkpoint, wakes,
+polls `deviceLocked` for up to 240 s while a human unlocks, then reads the verdict — **PASS** =
+checkpoint file gone *and* `device_sleep_resumed` in the journal *and* `sleeping:false`; **FAIL** =
+the checkpoint survived a normal wake-and-continue; **INCONCLUSIVE** = gone but not via the wake
+path. It re-checks the `.sav` hash and always leaves the screen awake.
 
 ---
 
@@ -373,14 +427,23 @@ applies in the first fifteen minutes. The CPU rule is not a hazard for either bu
   snapshots, so threads created or destroyed inside the window drop out). Only the background
   windows, where the thread set is stable, are read thread-by-thread here — which is where the
   `AudioTrack` = 0 result comes from.
+* **Another agent force-stopped `me.magnum.melonds.dev` at 12:17:47**, mid-test, having reused this
+  pass's live session. It destroyed the B1 staging (see above). It also killed one of this pass's
+  queued `flock` waiters at 11:30. Both were disclosed. Separately, this agent issued one batch of
+  read-only `dumpsys`/`run-as`/`sha256sum` calls at **11:25:15** while another agent held
+  `device.lock`, having assumed a holder that had timed out was still alive — no state was changed,
+  but it is the same class of mistake the swarm contract's first gotcha describes, and a
+  lock-expiry check belongs at the top of every device step, not just at the start of a session.
 * The stock build already contains upstream `cc6c3ba3` "Fix crash on dual-screen devices when
   returning from sleep" (it is an ancestor of the merge-base), so nothing here is credit for a fix
   upstream had already shipped.
 
 ## Device state left behind
 
-`me.magnum.melonds.dev` = the **fork** build `c86e8147` (sha256 `56defba8…`), process not running,
-with a valid sleep checkpoint on disk awaiting the restore test.
+`me.magnum.melonds.dev` = the **fork** build `c86e8147` (sha256 `56defba8…`), process not running.
+Its recovery directory still holds `checkpoint-1788969012256.mln` (19 301 543 B) and a
+`session.json` reading `sleeping:true` — the B1 staging that was pre-empted. The next launch of
+that package will discard it down the `shouldDiscardRecovery()` path, which is harmless.
 `me.magnum.melonds.thor` = the shipping build `c86e8147` (sha256 `05ecaed1…`), ROM library
 provisioned, resident with its foreground service. `/sdcard/roms/nds/` untouched apart from the
 game's own `.sav`, which is byte-identical to how the pass found it. The phone is **awake and
