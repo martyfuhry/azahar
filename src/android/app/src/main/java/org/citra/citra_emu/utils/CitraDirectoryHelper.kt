@@ -74,6 +74,9 @@ class CitraDirectoryHelper(
             PermissionsHandler.setCitraDirectory(path.toString())
             DirectoryInitialization.resetCitraDirectoryState()
             DirectoryInitialization.start()
+            // The real first run: config.ini only exists once the user has picked a directory,
+            // which is after CitraApplication.onCreate had its chance.
+            ThorDefaults.applyOnFirstRun()
         }
     }
 }

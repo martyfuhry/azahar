@@ -16,6 +16,7 @@ import org.citra.citra_emu.utils.GraphicsUtil
 import org.citra.citra_emu.utils.Log
 import org.citra.citra_emu.utils.MemoryUtil
 import org.citra.citra_emu.utils.PermissionsHandler
+import org.citra.citra_emu.utils.ThorDefaults
 
 class CitraApplication : Application() {
     private fun createNotificationChannel() {
@@ -57,6 +58,10 @@ class CitraApplication : Application() {
 
         NativeLibrary.logDeviceInfo()
         logDeviceInfo()
+        // Before anything can start an EmulationActivity: SecondaryDisplay reads
+        // enable_secondary_display when the activity loads settings, so the profile has to be
+        // on disk by then for the bottom panel to come up on the first boot.
+        ThorDefaults.applyOnFirstRun()
         createNotificationChannel()
         NativeLibrary.playTimeManagerInit()
     }
@@ -64,6 +69,7 @@ class CitraApplication : Application() {
     fun logDeviceInfo() {
         Log.info("Device Manufacturer - ${Build.MANUFACTURER}")
         Log.info("Device Model - ${Build.MODEL}")
+        Log.info("Device Name - ${Build.DEVICE}")
         if (Build.VERSION.SDK_INT > Build.VERSION_CODES.R) {
             Log.info("SoC Manufacturer - ${Build.SOC_MANUFACTURER}")
             Log.info("SoC Model - ${Build.SOC_MODEL}")

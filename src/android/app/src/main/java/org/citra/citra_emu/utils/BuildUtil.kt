@@ -11,6 +11,7 @@ object BuildUtil {
     object BuildFlavors {
         const val GOOGLEPLAY = "googlePlay"
         const val VANILLA = "vanilla"
+        const val THOR = "thor"
     }
 
     fun assertNotGooglePlay() {
@@ -22,4 +23,9 @@ object BuildUtil {
     @Suppress("SimplifyBooleanWithConstants", "KotlinConstantConditions")
     val isGooglePlayBuild =
         BuildConfig.FLAVOR == BuildFlavors.GOOGLEPLAY
+
+    /** True for the AYN Thor fork build, which ships its own first-run defaults profile. */
+    @Suppress("SimplifyBooleanWithConstants", "KotlinConstantConditions")
+    val isThorBuild =
+        BuildConfig.FLAVOR == BuildFlavors.THOR
 }
