@@ -6,6 +6,7 @@ add_executable(tests
     core/core_timing.cpp
     core/savestate.cpp
     core/file_sys/path_parser.cpp
+    core/frontend/framebuffer_layout.cpp
     core/hle/kernel/hle_ipc.cpp
     core/hle/kernel/shared_page.cpp
     core/memory/memory.cpp

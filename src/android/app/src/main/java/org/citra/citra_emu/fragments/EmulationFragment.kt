@@ -83,6 +83,7 @@ import org.citra.citra_emu.utils.EmulationMenuSettings
 import org.citra.citra_emu.utils.GameHelper
 import org.citra.citra_emu.utils.GameIconUtils
 import org.citra.citra_emu.utils.Log
+import org.citra.citra_emu.utils.RefreshRateUtil
 import org.citra.citra_emu.utils.ViewUtils
 import org.citra.citra_emu.viewmodel.EmulationViewModel
 
@@ -1687,6 +1688,10 @@ class EmulationFragment :
 
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
         Log.debug("[EmulationFragment] Surface changed. Resolution: " + width + "x" + height)
+        // Tell SurfaceFlinger this layer is a fixed 60hz producer, the same hint the bottom
+        // panel's SurfaceView gets. Without it a 60hz stream on the Thor's 120hz top panel is
+        // just an irregular one as far as the compositor is concerned.
+        RefreshRateUtil.requestSurfaceFrameRate(holder.surface)
         emulationState.newSurface(holder.surface)
     }
 
