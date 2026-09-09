@@ -28,8 +28,12 @@ import androidx.core.os.BundleCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.lifecycle.lifecycleScope
 import androidx.navigation.fragment.NavHostFragment
 import androidx.preference.PreferenceManager
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import org.citra.citra_emu.CitraApplication
 import org.citra.citra_emu.NativeLibrary
 import org.citra.citra_emu.R
@@ -72,6 +76,13 @@ class EmulationActivity : AppCompatActivity() {
     val settingsViewModel: SettingsViewModel by viewModels()
 
     private lateinit var binding: ActivityEmulationBinding
+
+    // NativeLibrary.initMultiplayer() reads the CFG username off the emulated NAND and brings the
+    // network stack up. On the UI thread of onCreate() that is dead time between the launch and
+    // the first frame, so it runs on a worker instead. Netplay is only reachable through
+    // displayMultiplayerDialog(), which joins this job first; nothing else touches the native
+    // multiplayer object before then.
+    private var multiplayerInit: Job? = null
     private lateinit var screenAdjustmentUtil: ScreenAdjustmentUtil
     private lateinit var hotkeyUtility: HotkeyUtility
     lateinit var secondaryDisplayManager: SecondaryDisplay
@@ -150,7 +161,7 @@ class EmulationActivity : AppCompatActivity() {
 
         super.onCreate(savedInstanceState)
 
-        NativeLibrary.initMultiplayer()
+        multiplayerInit = lifecycleScope.launch(Dispatchers.IO) { NativeLibrary.initMultiplayer() }
 
         // The Presentation needs this activity's window token, so it is created from
         // onStart/onResume rather than here; see SecondaryDisplay.onActivityStarted.
@@ -448,8 +459,12 @@ class EmulationActivity : AppCompatActivity() {
     }
 
     fun displayMultiplayerDialog() {
-        val dialog = NetPlayDialog(this)
-        dialog.show()
+        // Wait for the background initMultiplayer() before anything can reach the native netplay
+        // entry points; they dereference the multiplayer object without a null check.
+        lifecycleScope.launch {
+            multiplayerInit?.join()
+            NetPlayDialog(this@EmulationActivity).show()
+        }
     }
 
     fun addNetPlayMessages(type: Int, msg: String) {

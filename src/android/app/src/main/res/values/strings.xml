@@ -660,6 +660,7 @@
     <string name="savestate_build_mismatch_message"><![CDATA[Could not load savestate because it was created on a different Azahar version:<br/><b>Azahar %1$s</b>.<br/><br/>Please read our blog entry <a href="https://azahar-emu.org/blog/understanding-save-states/">understanding savestates</a> for more information.<br/><br/>To recover your progress, downgrade to <b>Azahar %1$s</b>, load this savestate and use the application\'s built-in save functionality.]]></string>
 
     <!-- Disk Shader Cache -->
+    <string name="initializing_emulation">Initializing…</string>
     <string name="preparing_shaders">Preparing Shaders</string>
     <string name="building_shaders">Building %s</string>
     <string name="delete_shader_cache">Delete Shader Cache</string>
