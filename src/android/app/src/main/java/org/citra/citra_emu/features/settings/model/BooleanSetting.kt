@@ -119,7 +119,10 @@ enum class BooleanSetting(
     USE_SKIP_DUPLICATE_FRAMES(
         SettingKeys.use_skip_duplicate_frames(),
         Settings.SECTION_RENDERER,
-        true
+        // Mirrors settings.h, where azahar-emu/azahar#2530 turned this off by default: the skip
+        // is keyed on a top-screen buffer swap rather than on the frame's contents, so a title
+        // that updates the screen without swapping presents nothing at all.
+        false
     ),
     USE_FRAME_LIMIT(SettingKeys.use_frame_limit(), Settings.SECTION_RENDERER, true),
     DEBUG_RENDERER(SettingKeys.renderer_debug(), Settings.SECTION_DEBUG, false),
