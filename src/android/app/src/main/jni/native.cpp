@@ -228,18 +228,24 @@ enum class AutoSaveEvent : jint {
     Offered = 0,       ///< A fresh autosave exists; the user decides whether to load it
     Resuming = 1,      ///< A fresh autosave is being loaded because the mode is "always"
     BuildMismatch = 2, ///< A fresh autosave exists but this build cannot load it
+    OfferedStale = 3,  ///< An autosave from before the previous session; only ever offered
 };
 
 static void NotifyAutoSaveEvent(AutoSaveEvent event, const Core::SaveStateInfo& info) {
     JNIEnv* env = IDCache::GetEnvForThread();
     env->CallStaticVoidMethod(IDCache::GetNativeLibraryClass(), IDCache::GetOnAutoSaveState(),
                               static_cast<jint>(event), static_cast<jlong>(info.time * 1000),
+                              static_cast<jint>(info.slot),
                               env->NewStringUTF(info.build_name.c_str()));
 }
 
 static bool AutoSaveEnabled() {
     return Settings::values.autosave_mode.GetValue() != Settings::AutoSaveMode::Off;
 }
+
+// The autosave generation this session writes to, chosen once per boot so that the ring holds one
+// state per past session rather than a few minutes of the current one. Emulation thread only.
+u32 session_autosave_slot = Core::AutoSaveStateSlot;
 
 /**
  * Called on the emulation thread right after a title booted, before the first RunLoop().
@@ -264,6 +270,12 @@ static bool OfferAutoSaveOnBoot(Core::System& system, u64 program_id) {
                         .count();
     Core::RecordNormalBoot(program_id, now);
 
+    // Chosen before the first autosave of the session and kept for its whole lifetime. The
+    // generation selected just above is passed in so it cannot be chosen: answering "start fresh"
+    // to the prompt below, or never seeing it because the mode is Ask and the state is stale,
+    // must not put the offered state under this session's writes.
+    session_autosave_slot = Core::PickAutoSaveWriteSlot(program_id, movie_id, autosave.slot);
+
     if (!AutoSaveEnabled()) {
         return false;
     }
@@ -271,8 +283,14 @@ static bool OfferAutoSaveOnBoot(Core::System& system, u64 program_id) {
     case Core::AutoSaveResumeStatus::None:
         break;
     case Core::AutoSaveResumeStatus::Stale:
-        LOG_INFO(Frontend, "Ignoring autosave from {} that predates the previous boot",
+        // Not loadable without asking: the previous session left no autosave, so the player may
+        // have made in-game saves that this state would rewind past. That is a reason to make
+        // them choose, not a reason to decide for them -- a session that was killed before its
+        // first autosave used to leave this state as the only copy of the progress, and the
+        // silent skip here was how it got overwritten and lost.
+        LOG_INFO(Frontend, "Offering autosave from {} that predates the previous boot",
                  autosave.time);
+        NotifyAutoSaveEvent(AutoSaveEvent::OfferedStale, autosave);
         break;
     case Core::AutoSaveResumeStatus::BuildMismatch:
         LOG_WARNING(Frontend, "Skipping autosave written by incompatible build {} {}",
@@ -281,8 +299,9 @@ static bool OfferAutoSaveOnBoot(Core::System& system, u64 program_id) {
         break;
     case Core::AutoSaveResumeStatus::Resumable:
         if (Settings::values.autosave_mode.GetValue() == Settings::AutoSaveMode::Always) {
-            LOG_INFO(Frontend, "Resuming from autosave written at {}", autosave.time);
-            system.SendSignal(Core::System::Signal::Load, Core::AutoSaveStateSlot);
+            LOG_INFO(Frontend, "Resuming from autosave written at {} (slot {})", autosave.time,
+                     autosave.slot);
+            system.SendSignal(Core::System::Signal::Load, autosave.slot);
             NotifyAutoSaveEvent(AutoSaveEvent::Resuming, autosave);
             return true;
         }
@@ -407,13 +426,85 @@ static void FlushAutoSave(Core::System& system) {
     if (!pump()) {
         return;
     }
-    if (!system.SendSignal(Core::System::Signal::Save, Core::AutoSaveStateSlot)) {
+    if (!system.SendSignal(Core::System::Signal::Save, session_autosave_slot)) {
         LOG_ERROR(Frontend, "Autosave: another signal is still pending");
         return;
     }
     if (pump()) {
-        LOG_INFO(Frontend, "Autosave written");
+        // The core logs the cost of the write itself, which is the whole of the stall; the wall
+        // time spent in here also covers slices run while the kernel finished its pending async
+        // operations, and those are ordinary frames rather than a stall.
+        LOG_INFO(Frontend, "Autosave written to slot {}", session_autosave_slot);
     }
+}
+
+/**
+ * Interval between autosaves taken while the title is running, zero when the user turned them
+ * off. Also zero when autosave itself is off, so that the two settings do not have to be read
+ * together anywhere else.
+ */
+static std::chrono::steady_clock::duration PeriodicAutoSaveInterval() {
+    if (!AutoSaveEnabled()) {
+        return {};
+    }
+    // The picker can only produce the values in Settings::AutoSaveInterval, but jni/config.cpp
+    // reads this key straight out of the ini and Setting<AutoSaveInterval> carries no range, so a
+    // corrupted or hand-edited config can hand over anything a u32 holds. Converting that many
+    // minutes to the nanosecond steady_clock::duration overflows well before u32 does, and a
+    // wrapped negative interval puts the deadline permanently in the past, which would autosave
+    // on every single loop iteration and wedge the emulator. A day is far beyond anything the UI
+    // offers and still converts exactly.
+    constexpr u32 max_minutes = 24 * 60;
+    const u32 minutes =
+        std::min(static_cast<u32>(Settings::values.autosave_interval.GetValue()), max_minutes);
+    return std::chrono::minutes(minutes);
+}
+
+/**
+ * Queues an autosave once the periodic interval has elapsed, for FlushAutoSave() to carry out on
+ * this same thread a moment later. Uses the ordinary request counter rather than a second path.
+ * Unlike the UI thread it needs no paused_mutex around the increment: the thread bumping the
+ * counter is the thread that services it, so there is no parked reader to miss the wake-up, and
+ * the counter is atomic against the UI thread's own increments.
+ *
+ * Two requests collapse into one write only when both increments land before FlushAutoSave()
+ * snapshots the counter. That is deliberate -- a request arriving mid-save must not be swallowed,
+ * because the state it wants saved is newer than the one being written -- but it means the
+ * shutdown path can now perform two saves back to back where it used to perform one: a periodic
+ * save already in flight, then the one the activity asks for on its way out. Against onStop's
+ * AUTOSAVE_WAIT_MS budget of 4 s the bad case is a periodic save that caught the suspend tail
+ * (~1.7 s) followed by a pause save (~0.4 s, more for a large state), so roughly 2-3 s. That
+ * still fits, but with far less headroom than the single save it replaced, and the headroom
+ * shrinks as state size grows. Overrunning the budget is not itself a loss -- awaitAutoSave()
+ * warns and lets the lifecycle proceed, and SaveState's tmp-then-rename leaves the previous
+ * generation intact if the process dies mid-write -- it only forfeits the newest save. Whether
+ * 4 s is still the right number wants a device to answer; raising it trades that forfeit against
+ * blocking onStop for longer, which is its own risk.
+ *
+ * `deadline` is carried by the caller and is reset by RestartPeriodicAutoSave() whenever the
+ * emulation thread starts or resumes, so time spent paused (during which the frontend has
+ * already written an autosave of its own) never counts towards the next one.
+ */
+static void RequestPeriodicAutoSaveIfDue(std::chrono::steady_clock::time_point& deadline) {
+    // Checked before the clock is read, because this is the default path: the setting ships Off,
+    // so for most players this function is two loads and a branch on every run loop iteration and
+    // never reads a clock at all. A stale deadline left behind here costs nothing -- turning the
+    // setting on mid-session then finds the deadline already passed and takes one save at once,
+    // which is the same thing that happens on any other transition into being due.
+    const auto interval = PeriodicAutoSaveInterval();
+    if (interval == std::chrono::steady_clock::duration::zero()) {
+        return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    if (now < deadline) {
+        return;
+    }
+    deadline = now + interval;
+    ++autosave_requested;
+}
+
+static void RestartPeriodicAutoSave(std::chrono::steady_clock::time_point& deadline) {
+    deadline = std::chrono::steady_clock::now() + PeriodicAutoSaveInterval();
 }
 
 /**
@@ -658,9 +749,16 @@ static Core::System::ResultStatus RunCitra(const std::string& filepath) {
 
     PerfLogger perf_logger;
 
+    // Started here rather than at declaration so that neither the boot nor the resume load above
+    // counts towards the first periodic autosave; the state the resume came from is current, and
+    // saving it straight back would only cost the player a hitch on the loading screen.
+    std::chrono::steady_clock::time_point next_periodic_autosave{};
+    RestartPeriodicAutoSave(next_periodic_autosave);
+
     // Start running emulation
     while (!stop_run) {
         if (!pause_emulation) {
+            RequestPeriodicAutoSaveIfDue(next_periodic_autosave);
             FlushAutoSave(system);
             const auto result = system.RunLoop();
             if (result == Core::System::ResultStatus::Success) {
@@ -720,6 +818,10 @@ static Core::System::ResultStatus RunCitra(const std::string& filepath) {
             // are really about to run again
             if (!pause_emulation && !stop_run) {
                 SetAudioOutputPaused(false);
+                // The pause wrote an autosave of its own, so the next periodic one is a whole
+                // interval away; paused wall time must not count towards it either, or a session
+                // resumed after a night in the background would hitch on its first frame back
+                RestartPeriodicAutoSave(next_periodic_autosave);
                 if (Settings::values.perf_log_interval.GetValue() != 0) {
                     perf_logger.Restart(system);
                 }

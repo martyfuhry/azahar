@@ -113,6 +113,15 @@ object ThorDefaults {
         ProfileEntry(IntSetting.AUTOSAVE_MODE) {
             IntSetting.AUTOSAVE_MODE.int = AUTOSAVE_MODE_ALWAYS
         },
+        // A kill during play is the case the pause-time autosave cannot cover, so the profile
+        // takes one every few minutes as well. The value is read from the setting's own default
+        // rather than restated: this entry only runs at first run (or when the profile is
+        // reapplied from the settings screen), so on an install that has already had its first
+        // run it does nothing, and a restated literal that later drifted from the compiled
+        // default would be a difference nobody would ever see take effect.
+        ProfileEntry(IntSetting.AUTOSAVE_INTERVAL) {
+            IntSetting.AUTOSAVE_INTERVAL.int = IntSetting.AUTOSAVE_INTERVAL.defaultValue
+        },
         ProfileEntry(IntSetting.PERF_LOG_INTERVAL) {
             IntSetting.PERF_LOG_INTERVAL.int = 0
         }

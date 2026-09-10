@@ -196,7 +196,7 @@ jint JNI_OnLoad(JavaVM* vm, void* reserved) {
     s_exit_emulation_activity =
         env->GetStaticMethodID(s_native_library_class, "exitEmulationActivity", "(I)V");
     s_on_auto_save_state = env->GetStaticMethodID(s_native_library_class, "onAutoSaveState",
-                                                  "(IJLjava/lang/String;)V");
+                                                  "(IJILjava/lang/String;)V");
     s_request_camera_permission =
         env->GetStaticMethodID(s_native_library_class, "requestCameraPermission", "()Z");
     s_request_mic_permission =

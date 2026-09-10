@@ -511,6 +511,13 @@ static const char* android_config_default_file_content = (BOOST_HANA_STRING(R"(
 # 0 (default): Off, 1: Ask before resuming, 2: Always resume
 )") DECLARE_KEY(autosave_mode) BOOST_HANA_STRING(R"(
 
+# How often a state is saved automatically while an application is running, in minutes. Only has
+# an effect when autosave_mode is not Off. Serializing a state stalls emulation for as long as it
+# takes, so a shorter interval bounds how much play a sudden kill can take with it at the cost of
+# a more frequent hitch.
+# 0 (default): Off, 1, 3, 5, 10, 15
+)") DECLARE_KEY(autosave_interval) BOOST_HANA_STRING(R"(
+
 [Camera]
 # Which camera engine to use for the right outer camera
 # blank: a dummy camera that always returns black image
@@ -563,6 +570,11 @@ static const char* android_config_default_file_content = (BOOST_HANA_STRING(R"(
 # Write a performance summary (FPS, emulation speed, frame time breakdown) to the log this many
 # seconds apart while emulation runs. 0 (default): Off
 )") DECLARE_KEY(perf_log_interval) BOOST_HANA_STRING(R"(
+
+# Log where the time in a savestate write went: serialize, compress, file write, and the
+# uncompressed volume fed to the compressor. One line per save, tagged SAVEBREAKDOWN.
+# 0 (default): Off, 1: On
+)") DECLARE_KEY(log_savestate_breakdown) BOOST_HANA_STRING(R"(
 
 # Whether to enable additional debugging information during emulation
 # 0 (default): Off, 1: On

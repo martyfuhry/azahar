@@ -137,3 +137,115 @@ TEST_CASE("Common::Compression::ZSTDInputStreamBuf", "[common][zstd]") {
         REQUIRE(in.Failed());
     }
 }
+
+TEST_CASE("Common::Compression::ZSTDOutputStreamBuf compression levels", "[common][zstd]") {
+    using namespace Common::Compression;
+    const auto payload = MakePayload(3 * 1024 * 1024);
+
+    const auto compress_at = [&payload](int level) {
+        std::vector<u8> compressed;
+        ZSTDOutputStreamBuf out{[&](std::span<const u8> chunk) {
+                                    compressed.insert(compressed.end(), chunk.begin(), chunk.end());
+                                    return true;
+                                },
+                                level};
+        {
+            std::ostream stream{&out};
+            stream.write(reinterpret_cast<const char*>(payload.data()), payload.size());
+            REQUIRE(stream.good());
+        }
+        REQUIRE(out.Finish());
+        REQUIRE_FALSE(out.Failed());
+        return compressed;
+    };
+
+    const auto round_trip = [&payload](const std::vector<u8>& compressed) {
+        ZSTDInputStreamBuf in{ChunkedSource(compressed)};
+        std::istream stream{&in};
+        const auto out = ReadAll(stream);
+        REQUIRE_FALSE(in.Failed());
+        REQUIRE(out == payload);
+    };
+
+    // Savestates are written at Core::SaveStateCompressionLevel and read by a decoder that is
+    // never told which level produced the frame. States written by older builds used Zstandard's
+    // default of 3, so every one of these has to read back through the same input streambuf for
+    // an existing state to survive a build that changed the level.
+    SECTION("a frame reads back identically whatever level wrote it") {
+        for (const int level : {3, 1, -1, -3}) {
+            INFO("compression level " << level);
+            round_trip(compress_at(level));
+        }
+    }
+
+    SECTION("the level that savestates now use is not the one older builds wrote") {
+        // Guards the claim above from becoming vacuous if the level is ever set back to 3
+        STATIC_REQUIRE(DefaultCompressionLevel == 3);
+        const auto legacy = compress_at(DefaultCompressionLevel);
+        const auto current = compress_at(1);
+        REQUIRE(legacy != current);
+        round_trip(legacy);
+        round_trip(current);
+    }
+
+    SECTION("both levels still compress") {
+        // Deliberately not asserting that level 1 produces a larger frame than level 3. It does
+        // on real savestate data (14.5 MB against 13.6 MB for Animal Crossing New Leaf) but that
+        // is a property of the data, not of Zstandard: on this synthetic payload level 1 comes
+        // out 0.5% *smaller*, and an assertion the other way would only be encoding an accident.
+        REQUIRE(compress_at(3).size() < payload.size());
+        REQUIRE(compress_at(1).size() < payload.size());
+    }
+}
+
+TEST_CASE("Common::Compression::ZSTDOutputStreamBuf::MeasureInto", "[common][zstd]") {
+    using namespace Common::Compression;
+    const auto payload = MakePayload(3 * 1024 * 1024);
+
+    ZSTDOutputStreamBuf::Stats stats;
+    std::size_t sink_bytes = 0;
+    ZSTDOutputStreamBuf out{[&](std::span<const u8> chunk) {
+        sink_bytes += chunk.size();
+        return true;
+    }};
+    out.MeasureInto(&stats);
+    {
+        std::ostream stream{&out};
+        stream.write(reinterpret_cast<const char*>(payload.data()), payload.size());
+        REQUIRE(stream.good());
+    }
+    REQUIRE(out.Finish());
+
+    SECTION("counts every byte in and every byte out") {
+        // bytes_in is what the caller wrote, which is the figure the breakdown reports as the
+        // uncompressed volume; bytes_out has to agree with what the sink actually received
+        REQUIRE(stats.bytes_in == payload.size());
+        REQUIRE(stats.bytes_out == sink_bytes);
+        REQUIRE(stats.bytes_out < stats.bytes_in);
+    }
+
+    SECTION("attributes time to the compressor and the sink separately") {
+        REQUIRE(stats.compress_ns > 0);
+        // The sink here only adds to a counter, so it must be a small fraction of the compressor
+        REQUIRE(stats.sink_ns < stats.compress_ns);
+    }
+}
+
+TEST_CASE("Common::Compression::ZSTDOutputStreamBuf without MeasureInto", "[common][zstd]") {
+    using namespace Common::Compression;
+    const auto payload = MakePayload(1024 * 1024);
+
+    // The default path must not touch the Stats machinery at all; this is the shape every save
+    // takes unless log_savestate_breakdown is on
+    ZSTDOutputStreamBuf::Stats stats;
+    ZSTDOutputStreamBuf out{[](std::span<const u8>) { return true; }};
+    {
+        std::ostream stream{&out};
+        stream.write(reinterpret_cast<const char*>(payload.data()), payload.size());
+    }
+    REQUIRE(out.Finish());
+    REQUIRE(stats.bytes_in == 0);
+    REQUIRE(stats.bytes_out == 0);
+    REQUIRE(stats.compress_ns == 0);
+    REQUIRE(stats.sink_ns == 0);
+}

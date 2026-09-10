@@ -29,6 +29,7 @@ object SettingKeys {
     external fun steps_per_hour(): String
     external fun apply_region_free_patch(): String
     external fun autosave_mode(): String
+    external fun autosave_interval(): String
     external fun graphics_api(): String
     external fun use_gles(): String
     external fun renderer_debug(): String
@@ -129,6 +130,7 @@ object SettingKeys {
     external fun udp_pad_index(): String
     external fun record_frame_times(): String
     external fun perf_log_interval(): String
+    external fun log_savestate_breakdown(): String
     external fun web_api_url(): String
     external fun network_token(): String
     external fun check_for_update_on_start(): String

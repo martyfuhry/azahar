@@ -190,9 +190,17 @@ System::ResultStatus System::RunLoop(bool tight_loop) {
         save_state_request_status = SaveStateStatus::NONE;
         const u32 slot = save_state_slot;
         LOG_INFO(Core, "Begin save to slot {}", slot);
+        const auto save_started = std::chrono::steady_clock::now();
         try {
             System::SaveState(slot);
-            LOG_INFO(Core, "Save completed");
+            // Serialization happens inline on this thread, so this figure is also exactly how
+            // long the frame the player was watching was stalled for. The periodic autosave on
+            // Android is only defensible while it stays small; log it so it can be checked on
+            // the device rather than argued about from the host.
+            LOG_INFO(Core, "Save completed in {} ms",
+                     std::chrono::duration_cast<std::chrono::milliseconds>(
+                         std::chrono::steady_clock::now() - save_started)
+                         .count());
         } catch (const std::exception& e) {
             LOG_ERROR(Core, "Error saving: {}", e.what());
             status_details = e.what();

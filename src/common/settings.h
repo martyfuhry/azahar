@@ -46,6 +46,84 @@ enum class AutoSaveMode : u32 {
     Always = 2, ///< Resume from a fresh autosave without asking
 };
 
+/**
+ * How often the frontend writes an autosave while the title is running, on top of the ones it
+ * writes when emulation is backgrounded or shut down. A hard kill in the middle of play costs
+ * everything since the last autosave, and a session that is never backgrounded never had one.
+ *
+ * The value is the interval in minutes, so the ini and the Android picker carry a number a human
+ * can read, and Off is a real choice rather than a sentinel that has to be explained. Serializing
+ * a state stalls the emulation thread for its whole duration, so the interval is the knob that
+ * trades a visible hitch against how much play a kill can take with it.
+ *
+ * It ships Off, and the measurements below are why.
+ *
+ * Nothing else in the autosave path costs anything while the player is playing. The generation
+ * ring and the stale offer are what actually stop a save being lost, and they are bookkeeping at
+ * boot. The pause-time save covers backgrounding, the lid and Home, and is nearly free because
+ * the emulation thread is parking anyway. Periodic saving covers exactly one case none of those
+ * reach -- a hard kill in the middle of play, the rarest of them -- and it is the only one that
+ * charges for the cover while the game is on screen. For a fork whose priorities are a locked
+ * frame rate and not losing saves, in that order of how quickly they are noticed, that is not a
+ * trade to make on the player's behalf. Anyone who wants it picks an interval; Off costs nothing
+ * at runtime.
+ *
+ * What the cost is driven by, third and current answer: the *volume of emulated memory*, which is
+ * essentially constant. Instrumenting SerializeCompressed to count the bytes actually handed to
+ * the compressor gives 314.4 MB for Animal Crossing New Leaf, 309.9 MB for Majora's Mask 3D and
+ * 311.3 MB for Hyrule Warriors Legends -- a spread of 0.7%, because what is being serialized is
+ * FCRAM and VRAM, which are fixed-size regardless of what the title does with them. Serialize
+ * time is correspondingly flat (117-125 ms) and total time varies only with how compressible the
+ * contents happen to be:
+ *
+ *     title  uncompressed     state    total    serialize   zstd    write
+ *     HWL    311.3 MB          9.5 MB  284.5 ms     117.2  162.9      4.4
+ *     MM3D   309.9 MB         17.8 MB  330.7 ms     117.7  205.3      7.7
+ *     ACNL   314.4 MB         13.6 MB  356.6 ms     124.8  224.7      7.1
+ *
+ * Note MM3D: the largest state of the three and *faster* than ACNL. State size does not predict
+ * save time.
+ *
+ * Two earlier models in this comment were wrong and are superseded. The first claimed the device
+ * was not slower than the host, from comparing a 7.3 MB device state against 9.6-21.4 MB host
+ * ones. The second corrected that by normalising per megabyte of *state* -- ~19.5 MB/s device
+ * against 33-59 MB/s host -- and concluded the device was 1.7-3x slower and that Majora's Mask
+ * would freeze for ~0.8-1.1 s there. That was also wrong, and was relayed to the owner before it
+ * was caught: it divided by the compressed output, which is not what the work is proportional to.
+ * The device's 374 ms was processing the same ~310 MB as everything else, which makes it ~1.1x
+ * the host, and Majora's Mask on that device should cost about what Pokemon X did -- ~374 ms, not
+ * a second. The Off default does not change: 374 ms is still far past the bar. Only the reasoning
+ * under it does.
+ *
+ * The device figures themselves stand, since they are direct measurements: AYN Thor, Pokemon X,
+ * Begin-save to Save-completed out of a logcat capture -- 281, 374, 375, 393 ms with the screen
+ * on, and 1756 and 1716 ms for two saves during which the screen went off mid-write. Those
+ * outliers are the suspend path, not saving: SCREEN_OFF arrives about half a second into each and
+ * the rest is spent with the device powering memory down underneath the write (PASR segment
+ * offlining is in the same log window). A periodic save normally runs with the screen on. It is
+ * not immune -- a sleep press landing inside a save window catches the same tail, on the order of
+ * one press in a thousand at a five minute interval -- but a freeze on a screen that has just
+ * gone dark is not one anybody sees.
+ *
+ * Not yet measured: a save taken during active play. Every device figure above is a pause-time
+ * save, because no build with this setting has run on a device yet. The breakdown above is
+ * produced by an opt-in diagnostic in the core, so this can be settled from a device log rather
+ * than modelled a fourth time.
+ *
+ * What would make this worth defaulting on is making the stall small rather than making it rarer.
+ * The split above says how: compression is 57-63% of it and the write 2%, so moving those off
+ * the emulation thread leaves the serialize alone, ~117-125 ms. See AS-1 and AS-2 in
+ * docs/fork/improvement-plan.md, which the same instrumentation has now sized.
+ */
+enum class AutoSaveInterval : u32 {
+    Off = 0,
+    OneMinute = 1,
+    ThreeMinutes = 3,
+    FiveMinutes = 5,
+    TenMinutes = 10,
+    FifteenMinutes = 15,
+};
+
 /** Defines the layout option for desktop and mobile landscape */
 enum class LayoutOption : u32 { // Shouldn't these have set numbers to prevent last two from
                                 // shifting? -OS
@@ -521,6 +599,7 @@ struct Values {
     Setting<u16> steps_per_hour{0, Keys::steps_per_hour};
     Setting<bool> apply_region_free_patch{true, Keys::apply_region_free_patch};
     Setting<AutoSaveMode> autosave_mode{AutoSaveMode::Off, Keys::autosave_mode};
+    Setting<AutoSaveInterval> autosave_interval{AutoSaveInterval::Off, Keys::autosave_interval};
 
     // Renderer
     // clang-format off
@@ -692,6 +771,16 @@ struct Values {
     bool record_frame_times;
     /// Seconds between PerfStats summaries written to the log; 0 disables them
     Setting<u32> perf_log_interval{0, Keys::perf_log_interval};
+    /**
+     * Logs where the time in a savestate write actually went -- serialize, compress, file write --
+     * along with the uncompressed volume that went through the compressor. Off by default; it
+     * costs two clock reads per compressor call, around 120 us against a ~300 ms save.
+     *
+     * It exists because the cost model for savestates was wrong twice, in opposite directions,
+     * and both times the argument was settled by modelling rather than measuring. The output is
+     * one greppable line per save (search SAVEBREAKDOWN) so a device log can settle it instead.
+     */
+    Setting<bool> log_savestate_breakdown{false, Keys::log_savestate_breakdown};
     std::unordered_map<std::string, bool> lle_modules;
     Setting<bool> delay_start_for_lle_modules{true, Keys::delay_start_for_lle_modules};
     Setting<bool> use_gdbstub{false, Keys::use_gdbstub};

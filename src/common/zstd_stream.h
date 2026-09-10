@@ -5,6 +5,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <span>
 #include <streambuf>
@@ -24,12 +25,25 @@ namespace Common::Compression {
  * the frame. The frame carries no content size, so read it back with ZSTDInputStreamBuf rather
  * than DecompressDataZSTD.
  */
+/**
+ * Zstandard's own default level (ZSTD_CLEVEL_DEFAULT), restated here so that <zstd.h> does not
+ * have to be included by everything that names it. Callers with a speed/ratio preference of their
+ * own should pass a level rather than relying on this.
+ */
+constexpr int DefaultCompressionLevel = 3;
+
 class ZSTDOutputStreamBuf final : public std::streambuf {
 public:
     /// Receives each compressed chunk; returning false aborts the stream
     using Sink = std::function<bool(std::span<const u8>)>;
 
-    explicit ZSTDOutputStreamBuf(Sink sink);
+    /**
+     * `level` is a Zstandard compression level. It affects only how this frame is produced --
+     * the level is recorded in the frame's own parameters, so ZSTDInputStreamBuf reads any level
+     * back without being told which one was used, and a stream written by an older build at a
+     * different level stays readable.
+     */
+    explicit ZSTDOutputStreamBuf(Sink sink, int level = DefaultCompressionLevel);
     ~ZSTDOutputStreamBuf() override;
 
     ZSTDOutputStreamBuf(const ZSTDOutputStreamBuf&) = delete;
@@ -41,6 +55,22 @@ public:
     /// Whether compression or the sink failed at any point
     [[nodiscard]] bool Failed() const {
         return failed;
+    }
+
+    /// Where a stream's time and bytes went, for callers that want to report it
+    struct Stats {
+        std::size_t bytes_in = 0;      ///< uncompressed bytes handed to the compressor
+        std::size_t bytes_out = 0;     ///< compressed bytes handed to the sink
+        std::uint64_t compress_ns = 0; ///< time inside the compressor
+        std::uint64_t sink_ns = 0;     ///< time inside the sink
+    };
+
+    /**
+     * Accumulates Stats while the stream runs. Off by default because it costs two clock reads
+     * per compressor call; the caller turns it on before writing anything.
+     */
+    void MeasureInto(Stats* into) {
+        stats = into;
     }
 
 protected:
@@ -57,6 +87,7 @@ private:
     std::vector<u8> out_buffer;
     bool failed = false;
     bool finished = false;
+    Stats* stats = nullptr;
 };
 
 /**

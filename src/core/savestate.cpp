@@ -2,10 +2,12 @@
 // Licensed under GPLv2 or any later version
 // Refer to the license.txt file included.
 
+#include <algorithm>
 #include <charconv>
 #include <chrono>
 #include <cstring>
 #include <istream>
+#include <limits>
 #include <ostream>
 #include <cryptopp/hex.h>
 #include <fmt/ranges.h>
@@ -13,6 +15,7 @@
 #include "common/file_util.h"
 #include "common/logging/log.h"
 #include "common/scm_rev.h"
+#include "common/settings.h"
 #include "common/swap.h"
 #include "common/zstd_stream.h"
 #include "core/core.h"
@@ -42,8 +45,12 @@ static_assert(sizeof(CSTHeader) == 256, "CSTHeader should be 256 bytes");
 constexpr std::array<u8, 4> header_magic_bytes{{'C', 'S', 'T', 0x1B}};
 
 static std::string GetSaveStatePath(u64 program_id, u64 movie_id, u32 slot) {
-    const std::string slot_name =
-        slot == AutoSaveStateSlot ? "autosave" : fmt::format("{:02d}", slot);
+    // Generation 0 keeps the bare "autosave" name it has always had, so a state left by a build
+    // that knew only one autosave is picked up as the ring's first entry with no migration step.
+    const std::string slot_name = !IsAutoSaveSlot(slot) ? fmt::format("{:02d}", slot)
+                                  : slot == AutoSaveStateSlot
+                                      ? "autosave"
+                                      : fmt::format("autosave{}", slot - AutoSaveStateSlot);
     if (movie_id) {
         return fmt::format("{}{:016X}.movie{:016X}.{}.cst",
                            FileUtil::GetUserPath(FileUtil::UserPath::StatesDir), program_id,
@@ -155,8 +162,32 @@ SaveStateInfo GetSaveStateInfo(u64 program_id, u64 movie_id, u32 slot) {
     return info;
 }
 
+std::vector<SaveStateInfo> ListAutoSaveStates(u64 program_id, u64 movie_id) {
+    std::vector<SaveStateInfo> result;
+    result.reserve(AutoSaveGenerationCount);
+    for (u32 generation = 0; generation < AutoSaveGenerationCount; ++generation) {
+        auto info = GetSaveStateInfo(program_id, movie_id, AutoSaveStateSlot + generation);
+        if (info.slot == std::numeric_limits<u32>::max()) {
+            // Missing, truncated or written for another title: nothing to lose by reusing it
+            continue;
+        }
+        result.emplace_back(std::move(info));
+    }
+    // Newest first. Stable, and the loop above visits the generations in order, so two states
+    // that share a second (the header has one-second resolution) keep the lower generation first
+    // and both consumers of this list stay deterministic.
+    std::stable_sort(
+        result.begin(), result.end(),
+        [](const SaveStateInfo& lhs, const SaveStateInfo& rhs) { return lhs.time > rhs.time; });
+    return result;
+}
+
 SaveStateInfo GetAutoSaveStateInfo(u64 program_id, u64 movie_id) {
-    return GetSaveStateInfo(program_id, movie_id, AutoSaveStateSlot);
+    SaveStateInfo info{};
+    // Which generation SelectAutoSaveState settles on does not depend on the boot time, only the
+    // status it returns does, and that is what CheckAutoSaveState is for. Nothing to read here.
+    SelectAutoSaveState(ListAutoSaveStates(program_id, movie_id), 0, &info);
+    return info;
 }
 
 u64 GetLastNormalBootTime(u64 program_id) {
@@ -190,7 +221,7 @@ void RecordNormalBoot(u64 program_id, u64 time) {
 }
 
 AutoSaveResumeStatus ClassifyAutoSaveState(const SaveStateInfo& autosave, u64 last_boot_time) {
-    if (autosave.slot != AutoSaveStateSlot) {
+    if (!IsAutoSaveSlot(autosave.slot)) {
         return AutoSaveResumeStatus::None;
     }
     if (autosave.status == SaveStateInfo::ValidationStatus::BuildMismatch) {
@@ -204,12 +235,66 @@ AutoSaveResumeStatus ClassifyAutoSaveState(const SaveStateInfo& autosave, u64 la
     return AutoSaveResumeStatus::Resumable;
 }
 
-AutoSaveResumeStatus CheckAutoSaveState(u64 program_id, u64 movie_id, SaveStateInfo* info) {
-    const auto autosave = GetAutoSaveStateInfo(program_id, movie_id);
-    if (info) {
-        *info = autosave;
+AutoSaveResumeStatus SelectAutoSaveState(const std::vector<SaveStateInfo>& generations,
+                                         u64 last_boot_time, SaveStateInfo* selected) {
+    const auto report = [&](const SaveStateInfo& info) {
+        if (selected) {
+            *selected = info;
+        }
+        return ClassifyAutoSaveState(info, last_boot_time);
+    };
+
+    // generations is newest first, so the first loadable one is the newest loadable one
+    for (const auto& info : generations) {
+        if (info.status != SaveStateInfo::ValidationStatus::BuildMismatch) {
+            return report(info);
+        }
     }
-    return ClassifyAutoSaveState(autosave, GetLastNormalBootTime(program_id));
+    if (!generations.empty()) {
+        // Every generation was written by a build that cannot be loaded here. Name the newest of
+        // them, which is the one the user would recognise.
+        return report(generations.front());
+    }
+    if (selected) {
+        SaveStateInfo none{};
+        none.slot = std::numeric_limits<u32>::max();
+        *selected = none;
+    }
+    return AutoSaveResumeStatus::None;
+}
+
+AutoSaveResumeStatus CheckAutoSaveState(u64 program_id, u64 movie_id, SaveStateInfo* info) {
+    return SelectAutoSaveState(ListAutoSaveStates(program_id, movie_id),
+                               GetLastNormalBootTime(program_id), info);
+}
+
+u32 PickAutoSaveWriteSlot(const std::vector<SaveStateInfo>& generations, u32 avoid_slot) {
+    // A generation nothing has ever been written to costs nothing to claim, and can never be the
+    // one this boot selected, because a selected generation is by definition present on disk
+    for (u32 generation = 0; generation < AutoSaveGenerationCount; ++generation) {
+        const u32 slot = AutoSaveStateSlot + generation;
+        if (std::none_of(generations.begin(), generations.end(),
+                         [slot](const SaveStateInfo& info) { return info.slot == slot; })) {
+            return slot;
+        }
+    }
+    // The ring is full: overwrite the oldest, which ListAutoSaveStates puts last -- but skip the
+    // generation this boot selected. It really can be the oldest one: SelectAutoSaveState returns
+    // the newest generation this build can load, so when every newer generation is a
+    // BuildMismatch it hands back the oldest, and writing there would destroy the only state the
+    // user was offered.
+    for (auto it = generations.rbegin(); it != generations.rend(); ++it) {
+        if (it->slot != avoid_slot) {
+            return it->slot;
+        }
+    }
+    // Unreachable: the ring is full here, so it holds AutoSaveGenerationCount >= 2 distinct
+    // slots, and at most one of them can be avoid_slot.
+    return generations.back().slot;
+}
+
+u32 PickAutoSaveWriteSlot(u64 program_id, u64 movie_id, u32 avoid_slot) {
+    return PickAutoSaveWriteSlot(ListAutoSaveStates(program_id, movie_id), avoid_slot);
 }
 
 static CSTHeader MakeHeader(u64 title_id) {
@@ -234,6 +319,29 @@ static CSTHeader MakeHeader(u64 title_id) {
 }
 
 /**
+ * Zstandard level for savestates. Level 1 rather than Zstandard's default of 3, because the
+ * compressor is most of what the emulation thread waits for and this is the good part of that
+ * curve. Measured on Animal Crossing New Leaf, which serializes ~314 MB down to a 13-14 MB state:
+ *
+ *     level    total     zstd      state size
+ *     3        345.8 ms  221.7 ms  13.6 MB
+ *     1        256.1 ms  135.6 ms  14.5 MB
+ *     -1       241.3 ms  118.0 ms  16.8 MB
+ *     -3       232.0 ms  108.8 ms  18.3 MB
+ *     -9       222.3 ms   95.4 ms  21.9 MB
+ *
+ * 26% off the whole save for 7% more file. The negative levels buy little further and cost real
+ * ratio, which is not free here: the autosave ring keeps up to AutoSaveGenerationCount states per
+ * title alongside eleven user slots, on a handheld.
+ *
+ * Nothing needs to know this level to read a state back. Zstandard records the frame parameters
+ * in the frame, so ZSTDInputStreamBuf decodes any level without being told, and states written by
+ * builds that used level 3 keep loading unchanged -- there is no format break here and no
+ * migration.
+ */
+constexpr int SaveStateCompressionLevel = 1;
+
+/**
  * Serializes the system through a Zstandard stream into `sink`, chunk by chunk. A New 3DS
  * state serializes to a few hundred MiB, so it is never held in memory as a whole: the
  * frontend that autosaves in the background on a memory-tight phone would otherwise provoke
@@ -241,7 +349,17 @@ static CSTHeader MakeHeader(u64 title_id) {
  */
 static void SerializeCompressed(const System& system,
                                 Common::Compression::ZSTDOutputStreamBuf::Sink sink) {
-    Common::Compression::ZSTDOutputStreamBuf compressor{std::move(sink)};
+    Common::Compression::ZSTDOutputStreamBuf compressor{std::move(sink), SaveStateCompressionLevel};
+
+    // Settings::values.log_savestate_breakdown exists because this cost was modelled wrongly
+    // twice, in opposite directions, and settled both times by argument rather than measurement.
+    Common::Compression::ZSTDOutputStreamBuf::Stats stats;
+    const bool measuring = Settings::values.log_savestate_breakdown.GetValue();
+    const auto begin = std::chrono::steady_clock::now();
+    if (measuring) {
+        compressor.MeasureInto(&stats);
+    }
+
     {
         std::ostream stream{&compressor};
         oarchive oa{stream};
@@ -252,6 +370,25 @@ static void SerializeCompressed(const System& system,
     }
     if (!compressor.Finish()) {
         throw std::runtime_error("Could not compress the save state");
+    }
+
+    if (measuring) {
+        const double total_ms =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - begin)
+                .count();
+        const double compress_ms = static_cast<double>(stats.compress_ns) / 1.0e6;
+        const double write_ms = static_cast<double>(stats.sink_ns) / 1.0e6;
+        // One greppable line per save. "serialize" is what is left once the compressor and the
+        // sink are subtracted, i.e. the boost graph walk -- the part that has to stay on the
+        // emulation thread whatever else moves off it.
+        LOG_INFO(Core,
+                 "SAVEBREAKDOWN total {:.1f} ms | serialize {:.1f} | compress {:.1f} | write "
+                 "{:.1f} | in {} B | out {} B | ratio {:.1f}",
+                 total_ms, total_ms - compress_ms - write_ms, compress_ms, write_ms, stats.bytes_in,
+                 stats.bytes_out,
+                 stats.bytes_out > 0
+                     ? static_cast<double>(stats.bytes_in) / static_cast<double>(stats.bytes_out)
+                     : 0.0);
     }
 }
 
