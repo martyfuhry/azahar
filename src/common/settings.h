@@ -638,7 +638,7 @@ struct Values {
     SwitchableSetting<bool> async_presentation{true, Keys::async_presentation};
     SwitchableSetting<bool> use_hw_shader{true, Keys::use_hw_shader};
     SwitchableSetting<bool> use_disk_shader_cache{true, Keys::use_disk_shader_cache};
-    SwitchableSetting<bool> use_skip_duplicate_frames{true, Keys::use_skip_duplicate_frames};
+    SwitchableSetting<bool> use_skip_duplicate_frames{false, Keys::use_skip_duplicate_frames};
     // Correctness, not performance: this emulates the PICA200's multiply semantics exactly
     // instead of letting the host GPU take its fast path. It costs some shader throughput, which
     // is why the value is worth stating deliberately rather than inheriting by accident.
