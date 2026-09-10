@@ -19,7 +19,6 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.os.ParcelFileDescriptor
 import android.os.SystemClock
 import android.text.Editable
 import android.text.TextWatcher
@@ -38,6 +37,7 @@ import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.coordinatorlayout.widget.CoordinatorLayout
 import androidx.core.content.res.ResourcesCompat
+import androidx.core.os.BundleCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.get
@@ -81,6 +81,7 @@ import org.citra.citra_emu.utils.DirectoryInitialization
 import org.citra.citra_emu.utils.DirectoryInitialization.DirectoryInitializationState
 import org.citra.citra_emu.utils.EmulationLifecycleUtil
 import org.citra.citra_emu.utils.EmulationMenuSettings
+import org.citra.citra_emu.utils.GameDescriptor
 import org.citra.citra_emu.utils.GameHelper
 import org.citra.citra_emu.utils.GameIconUtils
 import org.citra.citra_emu.utils.Log
@@ -120,8 +121,10 @@ class EmulationFragment :
     private val onPause = Runnable { togglePause() }
     private val onShutdown = Runnable { emulationState.stop() }
 
-    // Only used if a game is passed through intent on google play variant
-    private var gameFd: Int? = null
+    // The descriptor the running title was opened from, when the intent only named it by a URI
+    // the core cannot open by name. Owned for the whole time the core may reopen the ROM, and
+    // handed over rather than reopened when a launcher switches titles into this session.
+    private val gameDescriptor = GameDescriptor()
 
     override fun onAttach(context: Context) {
         super.onAttach(context)
@@ -138,57 +141,8 @@ class EmulationFragment :
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        val intent = requireActivity().intent
-        var intentUri: Uri? = intent.data
-        val oldIntentInfo = Pair(
-            intent.getStringExtra("SelectedGame"),
-            intent.getStringExtra("SelectedTitle")
-        )
-        var intentGame: Game? = null
-        intentUri = if (intentUri == null && oldIntentInfo.first != null) {
-            Uri.parse(oldIntentInfo.first)
-        } else {
-            intentUri
-        }
-        if (intentUri != null) {
-            if (!BuildUtil.isGooglePlayBuild) {
-                val intentUriString = intentUri.toString()
-                // We need to build a special path as the incoming URI may be SAF exclusive
-                Log.warning(
-                    "[EmulationFragment] Cannot determine native path of URI \"" +
-                        intentUriString + "\", using file descriptor instead."
-                )
-                if (!intentUriString.startsWith("!")) {
-                    gameFd =
-                        requireContext().contentResolver.openFileDescriptor(
-                            intentUri,
-                            "r"
-                        )?.detachFd()
-                    intentUri = if (gameFd != null) {
-                        Uri.parse("fd://" + gameFd.toString())
-                    } else {
-                        null
-                    }
-                }
-            }
-            intentGame =
-                intentUri?.let {
-                    // isInstalled, addedToLibrary and mediaType do not matter here
-                    GameHelper.getGame(
-                        it,
-                        isInstalled = false,
-                        addedToLibrary = false,
-                        mediaType = Game.MediaType.GAME_CARD
-                    )
-                }
-        }
-
-        val insertedCartridge = preferences.getString("insertedCartridge", "")
-        NativeLibrary.setInsertedCartridge(insertedCartridge ?: "")
-
-        try {
-            game = args.game ?: intentGame!!
-        } catch (e: NullPointerException) {
+        val target = resolveLaunchTarget(requireActivity().intent, args.game)
+        if (target == null) {
             Toast.makeText(
                 requireContext(),
                 R.string.no_game_present,
@@ -197,6 +151,10 @@ class EmulationFragment :
             requireActivity().finish()
             return
         }
+        gameDescriptor.adopt(target.fd)
+        game = target.game
+
+        applyInsertedCartridge()
 
         Log.info("[EmulationFragment] Starting application " + game.path)
 
@@ -207,6 +165,136 @@ class EmulationFragment :
             ScreenAdjustmentUtil(requireContext(), requireActivity().windowManager, settings)
         EmulationLifecycleUtil.addPauseResumeHook(onPause)
         EmulationLifecycleUtil.addShutdownHook(onShutdown)
+    }
+
+    /** A game a launch intent names, and the descriptor opened to reach it, if one was needed. */
+    private class LaunchTarget(val game: Game, val fd: Int?)
+
+    /**
+     * Works out which game [launchIntent] asks for, opening a descriptor for it when the only
+     * handle on it is a URI the core cannot open by name (every launcher launch: Argosy and our
+     * own home-screen shortcuts both pass a `content://` URI and no parcelled game).
+     *
+     * Returns null when the intent names nothing that can be opened — a revoked grant, a
+     * provider that is gone, or no game in the intent at all. Nothing has been torn down on that
+     * path and the returned descriptor is the caller's to own, so a title switch can give up on
+     * an unreadable URI and leave the running title exactly as it was.
+     */
+    private fun resolveLaunchTarget(launchIntent: Intent, preferredGame: Game?): LaunchTarget? {
+        var intentUri: Uri? = launchIntent.data
+            ?: launchIntent.getStringExtra("SelectedGame")?.let { Uri.parse(it) }
+        var fd: Int? = null
+        if (intentUri != null && !BuildUtil.isGooglePlayBuild) {
+            val intentUriString = intentUri.toString()
+            // We need to build a special path as the incoming URI may be SAF exclusive
+            Log.warning(
+                "[EmulationFragment] Cannot determine native path of URI \"" +
+                    intentUriString + "\", using file descriptor instead."
+            )
+            if (!intentUriString.startsWith("!")) {
+                fd = try {
+                    requireContext().contentResolver.openFileDescriptor(
+                        intentUri,
+                        "r"
+                    )?.detachFd()
+                } catch (e: Exception) {
+                    // A one-shot grant from a launcher expires, and the provider behind it can
+                    // be uninstalled or have moved the file; none of that may take a session down
+                    Log.error(
+                        "[EmulationFragment] Could not open \"" + intentUriString + "\": " +
+                            e.message
+                    )
+                    null
+                }
+                intentUri = fd?.let { Uri.parse("fd://$it") }
+            }
+        }
+        val intentGame = intentUri?.let {
+            // isInstalled, addedToLibrary and mediaType do not matter here
+            GameHelper.getGame(
+                it,
+                isInstalled = false,
+                addedToLibrary = false,
+                mediaType = Game.MediaType.GAME_CARD
+            )
+        }
+        val resolved = preferredGame ?: intentGame
+        if (resolved == null) {
+            fd?.let { GameDescriptor.closeRawFd(it) }
+            return null
+        }
+        return LaunchTarget(resolved, fd)
+    }
+
+    /**
+     * Loads the title [newIntent] names in place of the one this fragment is running, and
+     * returns whether it could.
+     *
+     * A launcher that re-sends its launch intent for a *different* game reaches
+     * [EmulationActivity.onNewIntent] on the live activity, so there is no second onCreate to do
+     * this in and no second fragment either: `NavController.setGraph` with a graph equal to the
+     * one already set replaces the graph's nodes and returns, without re-navigating to the start
+     * destination or passing its arguments on. This is the reload that used to be missing.
+     *
+     * The order matters in three ways. The incoming game is opened first, so a failure here
+     * leaves the running title untouched. The outgoing title is then stopped through
+     * [EmulationState.stop], the same autosave-then-stop the exit path uses, before its
+     * descriptor is closed — the core dups what it is given, but only while it still holds the
+     * file. And the new title is started through the same [EmulationState] and the same surface,
+     * so nothing tears down the window the renderer draws into.
+     */
+    fun switchToTitle(newIntent: Intent): Boolean {
+        if (!::emulationState.isInitialized) {
+            Log.error("[EmulationFragment] Asked to switch titles before one was ever loaded")
+            return false
+        }
+        val parcelledGame = newIntent.extras?.let {
+            BundleCompat.getParcelable(it, "game", Game::class.java)
+        }
+        val target = resolveLaunchTarget(newIntent, parcelledGame) ?: return false
+        if (!target.game.valid) {
+            // The file opened but holds nothing bootable. Letting the core find that out would
+            // end the session for a game the user never stopped playing.
+            Log.error("[EmulationFragment] " + target.game.path + " is not a bootable title")
+            target.fd?.let { GameDescriptor.closeRawFd(it) }
+            return false
+        }
+
+        emulationState.stop()
+        gameDescriptor.adopt(target.fd)
+        game = target.game
+        applyInsertedCartridge()
+
+        Log.info("[EmulationFragment] Switching to application " + game.path)
+        showLoadingScreen()
+        emulationState.restart(game.path)
+        return true
+    }
+
+    private fun applyInsertedCartridge() {
+        NativeLibrary.setInsertedCartridge(preferences.getString("insertedCartridge", "") ?: "")
+    }
+
+    /**
+     * Puts the views back the way onViewCreated leaves them for a title that has not started
+     * yet: the loading card in front, naming the incoming game, and the overlay and the drawer
+     * out of reach until [EmulationActivity.onEmulationStarted] says the game is up.
+     */
+    private fun showLoadingScreen() {
+        val binding = _binding ?: return
+        GameIconUtils.loadGameIcon(requireActivity(), game, binding.loadingImage)
+        binding.loadingTitle.text = game.title
+        binding.loadingText.setText(R.string.loading)
+        binding.loadingProgressIndicator.isIndeterminate = true
+        binding.loadingProgressText.visibility = View.GONE
+        binding.inGameMenu.getHeaderView(0).apply {
+            findViewById<TextView>(R.id.text_game_title).text = game.title
+            GameIconUtils.loadGameIcon(requireActivity(), game, findViewById(R.id.game_icon))
+        }
+        binding.drawerLayout.close()
+        binding.drawerLayout.setDrawerLockMode(DrawerLayout.LOCK_MODE_LOCKED_CLOSED)
+        ViewUtils.hideView(binding.surfaceInputOverlay)
+        ViewUtils.showView(binding.loadingIndicator)
     }
 
     override fun onCreateView(
@@ -685,10 +773,7 @@ class EmulationFragment :
         perfStatsUpdater = null
         EmulationLifecycleUtil.removeHook(onPause)
         EmulationLifecycleUtil.removeHook(onShutdown)
-        if (gameFd != null) {
-            ParcelFileDescriptor.adoptFd(gameFd!!).close()
-            gameFd = null
-        }
+        gameDescriptor.release()
         super.onDestroy()
     }
 
@@ -1802,7 +1887,7 @@ class EmulationFragment :
         ViewCompat.setOnApplyWindowInsetsListener(binding.inGameMenu, applyCutoutInsets)
     }
 
-    private class EmulationState(private val gamePath: String) {
+    private class EmulationState(private var gamePath: String) {
         private var state: State
         private var surface: Surface? = null
 
@@ -1897,6 +1982,25 @@ class EmulationFragment :
             }
         }
 
+        /**
+         * Points this state at [newGamePath] and boots it, in place of whatever ran before.
+         *
+         * The caller has already stopped the previous title (and written its autosave), so this
+         * is a [State.STOPPED] state with a new path. The surface is deliberately kept: a
+         * launcher switching titles usually does so while the activity is stopped and there is
+         * no surface at all yet, in which case this only records the path and the boot happens
+         * from [newSurface] exactly as it does on a cold start.
+         */
+        @Synchronized
+        fun restart(newGamePath: String) {
+            gamePath = newGamePath
+            state = State.STOPPED
+            autoSavedWhilePaused = false
+            if (surface != null) {
+                runWithValidSurface()
+            }
+        }
+
         @Synchronized
         fun run(isActivityRecreated: Boolean) {
             if (isActivityRecreated) {
@@ -1954,9 +2058,12 @@ class EmulationFragment :
             NativeLibrary.surfaceChanged(surface!!)
             when (state) {
                 State.STOPPED -> {
+                    // Read here rather than inside the thread: a second title switch may have
+                    // moved gamePath on by the time the thread body runs
+                    val path = gamePath
                     Thread({
                         Log.debug("[EmulationFragment] Starting emulation thread.")
-                        NativeLibrary.run(gamePath)
+                        NativeLibrary.run(path)
                     }, "NativeEmulation").start()
                 }
 

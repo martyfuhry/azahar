@@ -108,10 +108,18 @@ class EmulationActivity : AppCompatActivity() {
         }
 
     private val emulationFragment: EmulationFragment
+        get() = emulationFragmentOrNull!!
+
+    /**
+     * The fragment running the game, or null before the navigation graph has put one there — an
+     * onCreate that bailed out (no user directory, no game in the intent) leaves the host empty.
+     */
+    private val emulationFragmentOrNull: EmulationFragment?
         get() {
             val navHostFragment =
-                supportFragmentManager.findFragmentById(R.id.fragment_container) as NavHostFragment
-            return navHostFragment.getChildFragmentManager().fragments.last() as EmulationFragment
+                supportFragmentManager.findFragmentById(R.id.fragment_container) as? NavHostFragment
+            return navHostFragment?.childFragmentManager?.fragments
+                ?.lastOrNull() as? EmulationFragment
         }
 
     private var isRotationBlocked: Boolean = true
@@ -231,31 +239,57 @@ class EmulationActivity : AppCompatActivity() {
             Log.info("[EmulationActivity] Re-sent launch intent for the running title, resuming")
             return
         }
-        setIntent(intent)
-
-        // Switching titles tears the running one down without going through the fragment's
-        // stop(), so give it the same save-on-exit treatment
-        if (NativeLibrary.requestAutoSave()) {
-            NativeLibrary.waitForAutoSave(NativeLibrary.AUTOSAVE_WAIT_MS)
+        val fragment = emulationFragmentOrNull
+        if (fragment == null) {
+            // Nothing is running for this intent to replace; let the graph start a fragment the
+            // way a cold launch does
+            setIntent(intent)
+            val navHostFragment =
+                supportFragmentManager.findFragmentById(R.id.fragment_container) as NavHostFragment
+            navHostFragment.navController.setGraph(
+                R.navigation.emulation_navigation,
+                intent.extras
+            )
+            return
         }
-        NativeLibrary.stopEmulation()
-        NativeLibrary.playTimeManagerStop()
 
+        // The fragment reloads in place. Handing the new intent to
+        // NavController.setGraph(R.navigation.emulation_navigation, extras) does not work and
+        // never did: the graph it inflates is equal to the one already set, so setGraph replaces
+        // the graph's nodes and returns without re-navigating to the start destination, without
+        // a second EmulationFragment.onCreate, and without passing the arguments on. The core
+        // had already been stopped by then, which is why a title switch from a launcher left a
+        // dead session behind while a cold start of the same game worked.
+        val wasEmulationReady = isEmulationReady
+        val wasRotationBlocked = isRotationBlocked
+        val wasEmulationStarted = emulationViewModel.emulationStarted.value
         isEmulationReady = false
         isRotationBlocked = true
         requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LOCKED
         emulationViewModel.setEmulationStarted(false)
 
+        if (!fragment.switchToTitle(intent)) {
+            // The incoming game could not be opened and nothing was torn down for it, so the
+            // title that is playing keeps playing and the state above goes back as it was
+            Log.error("[EmulationActivity] Could not open the game the launch intent named")
+            Toast.makeText(this, R.string.title_switch_failed, Toast.LENGTH_LONG).show()
+            isEmulationReady = wasEmulationReady
+            isRotationBlocked = wasRotationBlocked
+            emulationViewModel.setEmulationStarted(wasEmulationStarted)
+            if (!isRotationBlocked) {
+                applyOrientationSettings()
+            }
+            return
+        }
+
+        setIntent(intent)
+        NativeLibrary.playTimeManagerStop()
         val game = intent.extras?.let { extras ->
             BundleCompat.getParcelable(extras, "game", Game::class.java)
         }
         if (game != null) {
             NativeLibrary.playTimeManagerStart(game.titleId)
         }
-
-        val navHostFragment =
-            supportFragmentManager.findFragmentById(R.id.fragment_container) as NavHostFragment
-        navHostFragment.navController.setGraph(R.navigation.emulation_navigation, intent.extras)
     }
 
     /**
