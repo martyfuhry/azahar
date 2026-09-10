@@ -55,7 +55,7 @@ class SettingsRepairPlannerTest {
 
     /** A tier-2 key where our opinion is not the upstream default. See the class comment. */
     private val exampleOpinionWeHaveNotShippedYet = RepairEntry(
-        key = "use_skip_duplicate_frames",
+        key = "an_opinion_that_differs_from_the_default",
         tier = RepairTier.OPINION,
         opinion = "false",
         upstreamDefault = "true",

@@ -17,10 +17,22 @@ import org.citra.citra_emu.utils.Log
  * value buys, and what the legitimate other side is.
  *
  * The upstream default of each entry is read from the setting's own [AbstractSetting.defaultValue]
- * rather than written down a second time. For every key listed here that value is also what the
- * emulator actually uses on Android when the key is blank — `jni/config.cpp` reads all of them
+ * rather than written down a second time here. For every key listed below that value is also what
+ * the emulator actually uses on Android when the key is blank — `jni/config.cpp` reads all of them
  * through `ReadSetting`, which passes the shared default straight through. That was not true of
  * `shaders_accurate_mul` until the hardcoded `false` fallback beside it was removed.
+ *
+ * **That is one hand-written copy, not zero.** `BooleanSetting` and `IntSetting` mostly restate
+ * `settings.h`'s defaults as Kotlin literals rather than asking the native side for them, so
+ * `defaultValue` is only as current as the last person to sync the two. An upstream commit that
+ * moves a default in `settings.h` alone leaves this table comparing against the old one, and the
+ * no-provenance rule then reads a value nobody has ever touched as a deliberate choice, or the
+ * reverse. `use_skip_duplicate_frames` did exactly that when azahar-emu/azahar#2530 flipped it.
+ *
+ * So: **whenever this fork takes upstream, diff `src/common/settings.h` for default changes and
+ * check every key named here against its Kotlin mirror before merging.** It is a dozen lines of
+ * comparison and it is the only thing standing between a silent upstream flip and this pass
+ * quietly writing back a value upstream deliberately changed.
  */
 object SettingsRepairProfile {
     /**
@@ -90,9 +102,21 @@ object SettingsRepairProfile {
         entry(
             BooleanSetting.USE_SKIP_DUPLICATE_FRAMES,
             RepairTier.OPINION,
-            true,
-            "Skips presenting a frame identical to the last one, which is most of them in a " +
-                "30 fps title."
+            false,
+            "Off, following upstream. The opinion here used to be `true` — it saves a render " +
+                "and a present on every second vblank in a 30 fps title, which is what this " +
+                "device mostly runs. azahar-emu/azahar#2530 turned the default off because the " +
+                "heuristic is not a duplicate-frame test: it skips whenever the guest has not " +
+                "swapped the *top* screen's framebuffer, so a title that draws without swapping " +
+                "is never presented and shows a black screen with working audio (#2495, " +
+                "Inazuma Eleven 3's cutscenes, on both renderers and on two unrelated GPUs). " +
+                "That failure is guest-side, so an Adreno is exposed exactly as much as a Steam " +
+                "Deck, and it is silent in the way this whole pass exists to prevent: a black " +
+                "cutscene looks like a broken game, not like a setting. The saving was never " +
+                "measured on this device — 9586541b4, which optimised the skipped path, ships " +
+                "with an empty measurement table — so an unmeasured win does not outweigh a " +
+                "demonstrated correctness bug. Anyone who wants it back turns the switch on and " +
+                "tier 2 cedes the key permanently."
         ),
         entry(
             BooleanSetting.SIMULATE_3DS_GPU_TIMINGS,

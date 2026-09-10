@@ -418,7 +418,7 @@ it again.
 | `filter_mode` | `true` | No preset renders at exactly the panel's pixel count. Pixel purists could differ. |
 | `simulate_3ds_gpu_timings` | `false` | A per-title workaround, not a global. Someone playing an affected title could want it. |
 | `delay_game_render_thread_us` | `0` | Same shape. |
-| `use_skip_duplicate_frames` | `true` | Saves GPU work in 30 fps titles. Costs a blocking GPU drain per skip, so a differing preference is conceivable. |
+| `use_skip_duplicate_frames` | `false` | **Changed from `true` on 2026-09-10, following upstream.** The old opinion was that it saves a render and a present on every second vblank in a 30 fps title, which is most of what this device runs. [azahar-emu/azahar#2530](https://github.com/azahar-emu/azahar/pull/2530) turned the upstream default off because the heuristic is not a duplicate-frame test at all: it is gated on `Core::PerfStats::game_frames_updated`, which `GPU::SetBufferSwap` sets only when the guest swaps the **top** screen's framebuffer. A title that updates the screen without swapping never sets it and is never presented — [#2495](https://github.com/azahar-emu/azahar/issues/2495), Inazuma Eleven 3's cutscenes playing their audio over a black screen, reproduced on OpenGL and Vulkan and on both a Steam Deck and an NVIDIA laptop, and fixed by unchecking the box. That is guest-side, so an Adreno is exposed exactly as much, and it is silent in the way this whole section exists to prevent: a black cutscene reads as a broken game, not as a setting. Against it, the saving has never been measured here — `9586541b4`, which optimised the skipped path, still carries an empty measurement table. An unmeasured win does not outweigh a demonstrated correctness bug, so the fork follows. The other side is still reachable: turning the switch on cedes the key permanently. |
 
 Tier 2 is where most of the value is, and it is safe precisely because it can be opted out of by
 simply changing the setting.
@@ -588,6 +588,39 @@ Android-effective default, so the first pass on any existing configuration makes
 at all: it only records ownership or cedes. Tier 2's value is entirely prospective — it is what
 lets a future change of mind reach a key we still own. The first pass is therefore much smaller
 and safer than this section implies, and tier 1 is the only thing that repairs anything today.
+
+### The failure mode this design has: an upstream default that moves under it
+
+Found on 2026-09-10, merging upstream 97d867d66. The planner compares against
+`AbstractSetting.defaultValue`, which the profile deliberately reads rather than restating — but
+`BooleanSetting`/`IntSetting` restate `settings.h` as Kotlin literals anyway, so `defaultValue` is
+a hand-written copy that only tracks upstream because somebody keeps it in step. **An upstream
+commit that changes a default in `settings.h` alone therefore changes what the emulator does
+without changing what this pass believes the default to be.**
+
+That is not hypothetical. [#2530](https://github.com/azahar-emu/azahar/pull/2530) flipped
+`use_skip_duplicate_frames` to `false` in `settings.h` and touched neither
+`BooleanSetting.kt` nor `default_ini.h`. Two things follow from a flip like that:
+
+- **If the mirror is not updated**, the tier table's `upstreamDefault` stays at the old value.
+  A blank key then reads as the *old* default, and the no-provenance rule mis-classifies: a value
+  nobody has ever chosen looks like a deliberate decision, or the reverse.
+- **If our opinion still names the old default**, the entry stops being inert. It was inert only
+  because opinion == default == live; once the default moves away, the same table starts writing
+  the old value back over a change upstream made on purpose. That is the trap, and it is silent
+  in both directions.
+
+**The check, on every upstream merge:** diff `src/common/settings.h` for changed defaults, and for
+each key in the tier tables compare its Kotlin mirror against the C++ declaration. Everything else
+in the tables was verified in step on 2026-09-10; `use_skip_duplicate_frames` was the only
+disagreement, and it is now the reason the check is written down.
+
+**One-time cost on devices that already carry a record.** Changing a tier-2 opinion to match a
+moved default cedes the key on any install whose sidecar still says we own the old value: the
+planner sees live != `owned[key]` and concludes the user moved it. The value it lands on is
+identical either way, so nothing changes on the device, but the log line says the key "was changed
+deliberately" when it was not. Ceded keys come back under our care through "Apply Thor defaults",
+which is the intended escape if the fork ever wants an opinion here again.
 
 ---
 
