@@ -42,6 +42,11 @@ reads the third report differently.
 | 10 | `11-comment-1308-2118-custom-textures-vulkan.md` | comment | #2118 (file after 9, so it can point at it) |
 | 11 | `05-vulkan-swapchain-lifetime-bugs.md` | new issue, or drop | new, or a comment on #1693 |
 | 12 | `12-android-accurate-multiplication-hardcoded-off.md` | new issue | new; supplies a cause for the Android half of #1445, without closing it |
+| 13 | `13-zero-area-renderpass-check-tests-height-twice.md` | comment, or a one-line PR | #2510 (merged 2026-09-10) |
+
+Number 13 is the cheapest thing in this directory: a typo in a two-day-old merged commit, visible
+in the diff, no device required. File it whenever; it is independent of everything else and costs
+one comment. It is last only because it was found last, on the 2026-09-10 upstream merge.
 
 Number 12 is appended rather than slotted in, to avoid renumbering, but on merit it belongs
 **near the front** — arguably first. It has what none of the others combine: a source-evident

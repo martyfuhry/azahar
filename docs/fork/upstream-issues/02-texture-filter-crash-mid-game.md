@@ -111,6 +111,22 @@ The framebuffer handle is live and the command stream is balanced, so the proble
 - **Attachment image views and images**, as opposed to the framebuffer object. The probe from bug 4 above should be extended to track `VkImageView` and `VkImage` the same way and checked at descriptor-write time.
 - **Allocation churn in the filter path.** One filter at a fixed 3x costs about 86 MiB of GPU-tracked memory with no change in render resolution, while going 1x → 4x with no filter is flat at 449 MiB. The 4x + Bicubic pipeline crash lives in the same place.
 
+- **A degenerate `renderArea`.** Added 2026-09-10, after upstream merged
+  [#2510](https://github.com/azahar-emu/azahar/pull/2510) ("renderer_vulkan: Skip zero-area
+  renderpasses"), which culls a draw whose `DrawRect()` — the intersection of the viewport with the
+  surface rect — has no area. That is a genuinely new candidate for the same evidence: the two
+  probes above establish that the driver has no active render pass at end time *even though we
+  recorded a begin for it*, and a tiler with no bins to allocate is one of the few things that can
+  legitimately turn a `vkCmdBeginRenderPass` into a no-op. Neither probe recorded the render area,
+  so a zero-area pass would have sailed past both of them. **This is a hypothesis and nothing
+  more** — the crash predates #2510 on both sides, it has never been shown that the filter
+  transition produces a degenerate rect, and the surfaces are being rescaled 1x → 3x underneath the
+  viewport at exactly that moment, which is the sort of transient that could produce one.
+  Two things to do before believing it: log `DrawRect()` across a filter transition and see whether
+  it ever degenerates, and if you test #2510 itself, **fix its predicate first** — it reads
+  `GetHeight() * GetHeight()`, so as merged it catches zero-height and misses zero-width. See draft
+  `13-zero-area-renderpass-check-tests-height-twice.md`.
+
 Whatever the fix turns out to be, confirm it at 4x + Bicubic as well as 3x.
 
 ## Cheap mitigation, if the real fix is far off
