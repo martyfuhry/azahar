@@ -1,6 +1,9 @@
 # Majora's Mask on the AYN Thor
 
 Research note, 2026-09-09. **Read-only. Nothing was installed on, or run against, the Thor.**
+**Updated the same evening — see [§5](#5-update-2026-09-09-evening--re-verified-at-thor-v1-rc5-with-three-corrections),
+which re-verifies the whole argument at `thor-v1-rc5` and corrects two numbers in §3.4/§3.7 and one
+instruction in Appendix A.3. The recommendation is unchanged.**
 Every claim about an external project is cited. Every claim about this repo is a `file:line`
 in `thor/main` at `1745b2f8f`. Every number about the texture pack was measured from the zip on
 the NFS share (headers only — the 4.4 GB archive was never extracted). Anything I could not
@@ -496,6 +499,258 @@ adb logcat -d | grep -E "Render.*(Aborting texture preload|Failed allocating|one
 
 ---
 
+## 5. Update, 2026-09-09 evening — re-verified at `thor-v1-rc5`, with three corrections
+
+§1-§4 above were written against `1745b2f8f`. Marty is now on **`thor-v1-rc5`** (`188ce81ec`,
+tree at `b3dfc8978`) at **4x, Vulkan, texture filter None, dual-screen, autosave**. This section
+re-checks the argument at that tree. **The recommendation does not change. Two of the numbers do,
+one in the pack's favour.**
+
+**Nothing in rc3/rc4/rc5 touched this code.** `git log --oneline thor-v1-rc2..HEAD --
+src/video_core/custom_textures src/video_core/renderer_vulkan/vk_texture_runtime.cpp
+src/video_core/rasterizer_cache` is **empty** across all 69 commits. Every `file:line` in §3 is
+still accurate.
+
+### 5.1 Correction: the `Type::Scaled` duplicate does **not** apply at texture filter = None
+
+§3.4 says a custom-texture surface allocates a second full-size image "at any resolution factor
+above 1x". That is wrong for Marty's configuration, and the error is roughly a factor of two
+against the pack.
+
+The custom-surface constructor gates on the **surface's** `res_scale`, not on the global
+resolution factor:
+
+```cpp
+// vk_texture_runtime.cpp:949-963
+handles[Type::Base].Create(mat->width, mat->height, ...);
+if (res_scale != 1) {
+    handles[Type::Scaled].Create(mat->width, mat->height, ...);   // full custom size again
+}
+if (has_normal) {
+    handles[Type::Custom].Create(mat->width, mat->height, ...);   // only with a normal map
+}
+```
+
+and `Surface::Surface(runtime, const SurfaceBase& surface, const Material* mat)` copies
+`res_scale` in from the surface it replaces (`: SurfaceBase{surface}`). For a **sampled texture**,
+that value is set one place only:
+
+```cpp
+// rasterizer_cache.h:584, GetTextureSurface
+params.res_scale = filter != Settings::TextureFilter::NoFilter ? resolution_scale_factor : 1;
+```
+
+**With no texture filter, sampled-texture surfaces have `res_scale == 1` regardless of the
+resolution factor**, so `handles[Type::Scaled]` is never created for them. `ThorDefaults.kt` ships
+`TEXTURE_FILTER_NONE` and that is what Marty runs. (A surface can still be scaled up later if it
+becomes a render target — `rasterizer_cache.h:1211-1213,1388-1391` — but that is rare for ordinary
+game textures, and for a *custom* surface `ScaleUp` sizes the new image from the **game-side**
+`width * res_scale`, not `mat->width`, which is a mismatch worth remembering next to the open
+Vulkan crashes in §3.8.)
+
+`Type::Custom` is likewise conditional on the material having a **normal map**. Henriko's pack is
+colour-only as far as anything I can see, so that third image is not allocated either —
+**uncertain**, not verified against the actual pack contents.
+
+**Revised per-distinct-texture cost, at Marty's exact settings** (4x, filter None, custom textures
+on, preload off, async on), with S = decoded RGBA8 size:
+
+| Term | Cost | Lifetime | Verified |
+|---|---|---|---|
+| CPU `CustomTexture::data` | 1.00 × S | **permanent** | yes — no unload path exists |
+| GPU `Type::Base` image | 1.00 × S | until invalidation | yes |
+| mip chain on top of Base | +0.33 × S, **only if `skip_mipmap`** | " | yes — `SkipMipmaps()` gates `GenerateMipmaps` at `rasterizer_cache.h:1131` |
+| GPU `Type::Scaled` | **not allocated** at filter None | — | yes (this section) |
+| GPU `Type::Custom` | only with a normal map | — | code yes, pack contents **uncertain** |
+| Staging | 1 × S, one frame | transient | yes |
+
+So **~2.0 × S steady, ~2.3 × S if mipmaps are generated** — not the ~4 × S §3.4 implies.
+
+### 5.2 What that does to the arithmetic, and what it does not
+
+At the **1080p tier** (mean S = 1.64 MiB, from the doc's own header scan of the 4K tier divided by
+four): **~3.3-3.8 MiB steady per distinct texture**, not ~6.5 MiB.
+
+Against the 1.5-2.5 GB headroom judgement in §3.4, that is **~450-750 distinct textures**, up from
+230-380. The pack has **4,513**. It is a better ratio and it is the same conclusion: the CPU-side
+decode is never freed, so the cost is monotonic in distinct textures ever seen and the ceiling if a
+session eventually touches the whole pack is **7.24 GiB CPU + ~7.24 GiB GPU**.
+
+**The number nobody has measured is the one that decides it:** how many distinct textures an actual
+MM3D session touches per hour. Not measurable without running it, and the Thor is out of bounds.
+Everything else here is arithmetic on top of a guess about that.
+
+**Baseline, now with a real Thor number instead of a range.** `~/Development/azahar-builds/
+measure-rc2-2026-09-09/session-rc2-4x.log`, cold boot at `resolution_factor = 4` on the Thor:
+
+```
+TOTAL PSS  1306429 kB (1276 MiB)   TOTAL RSS  1434548 kB (1401 MiB)
+GL mtrack   449096 kB ( 439 MiB)   Native Heap 581381 kB (568 MiB)
+game_fps 59.38  speed 99%  gpu 1.85 ms  frametime 6.07 ms  (6 samples)
+```
+
+**Caveat that matters: that is Animal Crossing: New Leaf on rc2, not MM3D.** It confirms the
+"1.1-1.8 GiB at 4x" band with a hard measurement and it confirms 4x is not GPU-bound on this
+device. It says nothing MM3D-specific. There is **no MM3D memory measurement anywhere in this
+repo's captures**.
+
+### 5.3 New since §3 was written: the autosave transient lands at the worst moment
+
+§3 predates the rc3/rc4 autosave work. Two facts from it now bear on the pack:
+
+- A savestate write is fed **310-314 MB across every title measured**, and that buffer is
+  allocated in one piece (`releases/thor-v1-rc4.md:88-97`).
+- rc5 ships the **periodic** autosave **off** (`61ca81516`), on Marty's own call. What is always on
+  is the **pause-time save** — the one that fires when the app backgrounds.
+
+Which means the ~310 MB transient lands at exactly the instant the process stops being foreground
+and becomes lmkd's heaviest cached task (`android-kill-root-cause.md:54`). A texture pack makes
+the process fatter precisely at the moment it is most likely to be killed, and adds 310 MB of
+allocation on top. Autosave means he loses less when it happens; it does not make it happen less.
+
+### 5.4 The tier question has a clean answer, and it is not a matter of taste
+
+`graphics-settings-guide.md:113-130` has the panel numbers, and they settle which tier is
+dimensioned for this device:
+
+| Panel | Pixels | 3DS screen fitted to | Factor at which it is full |
+|---|---|---|---|
+| Top, 6" | 1080x1920 | 1800x1080 | **4.5x** |
+| Bottom, 3.92" | 1080x1240 | 1080x810 | 3.4x |
+
+At resolution factor R the renderer samples textures at R× native density. A replacement texture at
+N× the original's dimensions is therefore fully resolved only when R ≥ N.
+
+- **1080p tier = 4× replacements.** Exactly saturated at **R = 4**, which is what he runs.
+- **4K tier = 8× replacements.** Needs **R = 8** to resolve. The guide's own conclusion is that 5x
+  is the first factor that fills the top panel and **"6x and up are invisible on both panels. There
+  is nowhere for the pixels to go."**
+
+**So the 4K tier is dimensioned for a render resolution this hardware cannot display.** Its extra
+texels are unreachable except on a surface magnified more than 2x on screen — a wall the camera is
+pressed against. This replaces the "below what your eye resolves" hand-wave in §0 with something
+checkable: **the 1080p tier is not a compromise on this device, it is the correct tier**, and it
+carries essentially all of the visible benefit.
+
+(Henriko's own wiki tells Android users to start at **2x** internal resolution with the pack
+installed. That is his advice for a phone with less headroom than a Thor; at 2x the 1080p tier's
+own texels stop resolving too. The tier and the resolution factor want to match.)
+
+### 5.5 Provenance: this is not AI slop, by the author's own description
+
+The question of whether the pack is a neural upscale is answerable from the author's own page
+([henrikomagnifico.com/zelda-majoras-mask-3d-4k](https://www.henrikomagnifico.com/zelda-majoras-mask-3d-4k)):
+
+> "I usually rework the textures by hand in Photoshop by compositing native 4K textures with an
+> upscaled texture as a reference"
+
+An upscale is used as a **reference layer**, composited against source art and reworked by hand.
+That is the opposite of an ESRGAN-and-ship pipeline, and it is consistent with the pack's stated
+goal of remaking every texture from scratch. He does not name the upscaler he references.
+**Current version is v3.0b: 4K tier 3.43 GB, 1080p tier 1.62 GB, textures-only** (the
+Re-Orchestrated soundtrack and the "Henriko Ultra 8.0" / "N64 Style 3.0" ReShade presets are
+separate optional downloads, not part of the pack). The GitHub wiki is stale relative to the
+download page — it still describes 2.0.0 as current.
+
+**What I could not verify, and am not going to pretend otherwise.** Whether the pack "looks worse
+in motion" is the standard failure mode of upscaled packs and I found **no** community discussion
+either way — the session that chased this had its web-search budget exhausted and Reddit, GBAtemp,
+the Citra forums and archive.org were all unreachable. **Absence of criticism here is absence of
+evidence, not evidence of absence.** A GameBanana API query for MM3D texture mods returned nothing,
+so Henriko's is very likely the only maintained MM3D pack — again a negative result from one
+source, not a survey.
+
+### 5.6 Two failure modes in the loader that §3 did not cover
+
+Both read out of `thor/main` at `b3dfc8978`; **neither was executed**, so both are code-reading
+results, not observations.
+
+**A single corrupt PNG is undefined behaviour, not a skipped texture.** `CustomTexture::width` and
+`::height` are plain uninitialised `u32` (`material.h:58-59`, no initialiser). The only writer is
+`DecodePNG`, and when it fails `LoadPNG` logs and returns **without** touching them and without
+marking anything:
+
+```cpp
+// material.cpp:83-86
+if (!image_interface.DecodePNG(data, width, height, input)) {
+    LOG_ERROR(Render, "Failed to decode png: {}", path);
+    return;
+}
+```
+
+`Material::LoadFromDisk` then never checks that the texture actually loaded — it only checks that
+`textures[0]` is non-null — so it reads the indeterminate `width`/`height` into the material and
+falls through to `state = DecodeState::Decoded` (`material.cpp:116-141`). `TickFrame` sees
+`Decoded`, runs the upload, and `Surface::Surface(..., mat)` calls
+`handles[Type::Base].Create(mat->width, mat->height, ...)` **with garbage dimensions**. Outcome is
+anything from a wrong-looking texture to an absurd VMA allocation to a driver abort. For a 1.6 GB
+download this is a live concern: **verify the archive before copying it to the device.**
+
+**A malformed `pack.json` is a hard crash, not a fallback.** `ReadConfig` parses with exceptions
+suppressed and then dereferences unconditionally:
+
+```cpp
+// custom_tex_manager.cpp:335-340
+nlohmann::json json = nlohmann::json::parse(config, nullptr, false, true);
+const auto& options = json["options"];
+skip_mipmap = options["skip_mipmap"].get<bool>();
+```
+
+`allow_exceptions = false` makes a parse failure return a **discarded** value rather than throw —
+and `operator[]` on a discarded value then throws `json::type_error`, uncaught, from a code path
+with no handler. A file that parses but has no `"options"` object is worse: `json["options"]`
+inserts a null, and the const `operator[]` on null is a `JSON_ASSERT` that compiles out under
+`NDEBUG`. The graceful "no pack.json → legacy defaults" path in §3.5 only covers the file being
+**absent**. A present-but-broken one is a crash. This is almost certainly the mechanism behind
+[azahar#1512](https://github.com/azahar-emu/azahar/issues/1512).
+
+The genuinely graceful case is a **missing** replacement: `GetMaterial` returns `nullptr` with
+`Unable to find replacement for surface with hash …` at WARNING and the stock texture is used
+(`rasterizer_cache.h:1107-1110`). That is the behaviour Appendix A.4 leans on and it is sound.
+
+### 5.7 M-6 is still true, and Android reaches it only by hand
+
+`improvement-plan.md` M-6 (the preload budget taken from total RAM) is **unchanged at rc5** —
+`custom_tex_manager.cpp:207-234` still reads `Common::GetMemInfo().total_physical_memory`, still
+subtracts a flat 2 GiB, and still compares `size_sum` *before* adding the next texture so it
+overshoots by one. On an 8 GB Thor that is a ~5.4 GiB budget for a process Android will not let
+past a fraction of it.
+
+**But the Android UI does not expose the toggle at all.** `SettingsFragmentPresenter.kt:1382-1394`
+has the `PRELOAD_TEXTURES` switch commented out, upstream, with:
+
+```kotlin
+// Disabled until custom texture implementation gets rewrite, current one overloads RAM
+// and crashes Citra.
+```
+
+That is upstream Azahar stating §3.3's conclusion in its own source. It also means **Appendix A.3's
+"Preload Custom Textures = OFF" is not an instruction Marty can follow — there is no such switch on
+the phone.** The default is already `false` (`settings.h:749`) and `jni/config.cpp:239` reads
+`[Utility] preload_textures` from `config.ini`, so the only way to turn it on is to hand-edit that
+file. **Don't.** M-6 stays a latent bug rather than a reachable one, which lowers its priority but
+not its correctness.
+
+The two settings that *are* in the Android UI, under Graphics → the block after Dump Textures, are
+**Custom Textures** and **Async Custom Texture Loading** (`SettingsFragmentPresenter.kt:1341-1359`).
+
+### 5.8 Standing recommendation at rc5
+
+**Unchanged: don't install a pack for this playthrough.** The corrections in 5.1 make the 1080p
+tier roughly twice as affordable as §3.7 said and the panel arithmetic in 5.4 says it is the right
+tier — but "twice as affordable" is 450-750 textures against 4,513, in a loader that frees nothing,
+on the device whose kill behaviour this fork exists to fight, with the Vulkan custom-texture
+regressions of §3.8 still unaddressed in `thor/main`. He is mid-playthrough and it runs at 99%
+speed with 439 MiB of GPU memory to spare.
+
+**If he ever does experiment**, the shape is: `MM 3D 4K 3.0b-1 (1080p).zip`, at 4x (not 3x — 5.4
+supersedes A.3 on this; the tier and the factor should match, and 4x is what the pack's 4×
+replacements are cut for), custom textures on, async on, on a **branch of the save he cares
+about** — copy the `.sav`/savestate off the device first, because backing out is deleting the
+folder but a corrupted session is not. And it is an evening's experiment, not a playthrough plan.
+
+---
+
 ## Appendix A — if you want to try a pack anyway
 
 ### A.0 Do not use the file on your share. Download the 1080p tier instead.
@@ -540,15 +795,42 @@ the app's settings. The pack goes at:
 <user dir>/load/textures/0004000000125500/tex1_*.png
 ```
 
+**Verify the archive before it goes anywhere near the device** — §5.6: one truncated PNG is
+undefined behaviour in the loader (indeterminate image dimensions, not a skipped texture), and a
+malformed `pack.json` is a hard crash rather than a fallback.
+
+```bash
+cd <the extracted 0004000000125500 folder>
+unzip -t "MM 3D 4K 3.0b-1 (1080p).zip"          # before extracting
+
+python3 - <<'EOF'                                # after: every PNG header must be intact
+import glob
+bad = []
+for f in glob.glob('*.png'):
+    with open(f, 'rb') as fh:
+        d = fh.read(33)
+    if d[:8] != b'\x89PNG\r\n\x1a\n' or d[12:16] != b'IHDR' or len(d) < 33:
+        bad.append(f)
+print(len(glob.glob('*.png')), 'png,', len(bad), 'bad'); print('\n'.join(bad[:20]))
+EOF
+
+python3 -m json.tool pack.json >/dev/null && wc -c pack.json   # must parse, must be < 56313 bytes
+```
+
 Flat, plus `pack.json` if the tier ships one. `GetTextures()` does scan recursively (depth 64) but
 `ParseFilename` keys off the leaf name, so flat is what the pack expects. Copy over MTP or
 `adb push`; a `.nomedia` in that folder saves the media scanner from indexing 4,513 PNGs.
 
 ### A.3 Settings
 
-Graphics/Utility: **Custom Textures = ON**, **Preload Custom Textures = OFF** (non-negotiable,
-§3.3, and the author's FAQ says the same), **Async Custom Texture Loading = ON**, Resolution Factor
-**3x**, Texture Filter **None** (a filter multiplies sampled-texture memory by res² —
+> **Superseded in two places by §5.** (a) There is no *Preload Custom Textures* switch in the
+> Android UI — upstream commented it out (§5.7); it is off unless `config.ini` is hand-edited, so
+> there is nothing to do. (b) Use **4x, not 3x**: §5.4 shows the 1080p tier's 4x replacements are
+> cut for exactly that factor, and §5.1 shows 3x saves no custom-texture memory at filter None.
+
+Graphics/Utility: **Custom Textures = ON**, ~~**Preload Custom Textures = OFF**~~ (not in the UI —
+§5.7; the default is already off), **Async Custom Texture Loading = ON**, Resolution Factor
+**4x** (§5.4), Texture Filter **None** (a filter multiplies sampled-texture memory by res² —
 `rasterizer_cache.h:583`, plan items `M-7`/`D-2` — and you do not want that stacked on a texture
 pack; the author's FAQ separately blames Linear Filtering for misplaced textures under memory
 pressure).
@@ -584,6 +866,17 @@ with no `pack.json` at all Azahar forces `use_new_hash = false` and `skip_mipmap
   addressed anywhere in `thor/main`. Worth a deliberate look if custom textures ever become a goal.
 - **2S2H and Zelda64Recomp performance on SD8G2.** No public data for either. Both are structurally
   cheap; neither has been measured on this hardware by anyone whose report I could find.
+- **How many distinct textures does an hour of MM3D actually touch?** This is the single number the
+  whole memory argument rests on (§5.2) and nobody has measured it. It is measurable — count
+  distinct hashes reaching `UploadCustomSurface` — but not without running the game.
+- **Is `CustomTexture::width` really uninitialised on a decode failure in practice?** (§5.6.) Read
+  out of the source, never executed. A unit test over a deliberately truncated PNG would settle it
+  in minutes and is worth writing regardless of whether anyone installs a pack.
+- **Does Henriko's 3.0b `pack.json` set `skip_mipmap`, and does the pack ship normal maps?** Both
+  change the per-texture cost in §5.1 and neither was checked against the actual 3.0b download.
+- **Does the pack look worse in motion?** Unanswered (§5.5). The web-research pass had its search
+  budget exhausted and could not reach any forum. This is the standard failure mode of upscaled
+  packs and it remains genuinely unknown here.
 - **M-6 and M-7** (`improvement-plan.md:251,248`) are the two changes that would make *any* large
   texture pack viable on this device: a preload budget from `largeMemoryClass`, and a texture-cache
   byte budget with LRU eviction. A third is missing from the plan entirely and is arguably the most
