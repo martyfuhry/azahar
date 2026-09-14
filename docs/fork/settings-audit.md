@@ -600,7 +600,12 @@ without changing what this pass believes the default to be.**
 
 That is not hypothetical. [#2530](https://github.com/azahar-emu/azahar/pull/2530) flipped
 `use_skip_duplicate_frames` to `false` in `settings.h` and touched neither
-`BooleanSetting.kt` nor `default_ini.h`. Two things follow from a flip like that:
+`BooleanSetting.kt` nor `default_ini.h`. (Upstream caught the Kotlin half itself a day later, in
+`c1f381a78` "android: Fix default value mismatch for skip duplicate frames setting"; the fork had
+already made the same change in `394171cc3`, so the 2026-09-14 merge only conflicted on the
+comment. Upstream's `default_ini.h` still says "1 (default)". The point stands: the mirror was
+a separate, later commit, and nothing forces the next one to arrive at all.) Two things follow
+from a flip like that:
 
 - **If the mirror is not updated**, the tier table's `upstreamDefault` stays at the old value.
   A blank key then reads as the *old* default, and the no-provenance rule mis-classifies: a value
@@ -613,7 +618,8 @@ That is not hypothetical. [#2530](https://github.com/azahar-emu/azahar/pull/2530
 **The check, on every upstream merge:** diff `src/common/settings.h` for changed defaults, and for
 each key in the tier tables compare its Kotlin mirror against the C++ declaration. Everything else
 in the tables was verified in step on 2026-09-10; `use_skip_duplicate_frames` was the only
-disagreement, and it is now the reason the check is written down.
+disagreement, and it is now the reason the check is written down. On the 2026-09-14 merge
+(upstream `164fd78ca`) `settings.h` was unchanged, so there was nothing to compare.
 
 **One-time cost on devices that already carry a record.** Changing a tier-2 opinion to match a
 moved default cedes the key on any install whose sidecar still says we own the old value: the
