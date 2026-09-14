@@ -1,5 +1,14 @@
 # The new zero-area renderpass cull tests height twice, so a zero-**width** draw rect still gets through
 
+> **Fixed upstream — do not file.** Wunkolo fixed the predicate himself in `4034f6c16`
+> ("video_core: Skip zero-area renderpasses (#2544)", merged 2026-09-12), whose message names the
+> `Height * Height` typo in #2510. The Vulkan check now reads `draw_rect.GetArea() == 0`, where the
+> new `Common::Rectangle::GetArea()` is `GetWidth() * GetHeight()`, and the same cull was added to
+> `RasterizerOpenGL::Draw`. The fork took it in the 2026-09-14 upstream merge (`dfbee3621`), so
+> `thor/main` from that merge on culls zero-width *and* zero-height draw rects. `thor-v1-rc6` and
+> earlier still carry the half-check. The rest of this draft is kept as the record of what was
+> found and why it mattered to draft 02; its checklist is moot.
+
 **Shape:** comment on the merged PR, [#2510](https://github.com/azahar-emu/azahar/pull/2510) — or a
 one-line PR, which is what it really wants to be. Wunkolo merged it two days ago; nobody has filed
 anything about it yet.

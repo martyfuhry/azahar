@@ -123,9 +123,12 @@ The framebuffer handle is live and the command stream is balanced, so the proble
   transition produces a degenerate rect, and the surfaces are being rescaled 1x → 3x underneath the
   viewport at exactly that moment, which is the sort of transient that could produce one.
   Two things to do before believing it: log `DrawRect()` across a filter transition and see whether
-  it ever degenerates, and if you test #2510 itself, **fix its predicate first** — it reads
-  `GetHeight() * GetHeight()`, so as merged it catches zero-height and misses zero-width. See draft
-  `13-zero-area-renderpass-check-tests-height-twice.md`.
+  it ever degenerates, and test against a build with the *corrected* predicate. #2510 as merged
+  read `GetHeight() * GetHeight()`, so it caught zero-height and missed zero-width (draft
+  `13-zero-area-renderpass-check-tests-height-twice.md`); upstream fixed that in `4034f6c16`
+  (#2544, `draw_rect.GetArea() == 0`), which the fork took in the 2026-09-14 merge `dfbee3621`.
+  A `thor/main` build from that merge on is a whole experiment; `thor-v1-rc6` and earlier only
+  cull zero-height rects, so a crash on those builds says nothing about the zero-width half.
 
 Whatever the fix turns out to be, confirm it at 4x + Bicubic as well as 3x.
 
