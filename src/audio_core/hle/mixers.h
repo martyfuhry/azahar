@@ -6,6 +6,7 @@
 
 #include <array>
 #include <boost/serialization/array.hpp>
+#include <boost/serialization/version.hpp>
 #include "audio_core/audio_types.h"
 #include "audio_core/hle/effects.h"
 #include "audio_core/hle/shared_memory.h"
@@ -30,12 +31,9 @@ public:
         return current_frame;
     }
 
-private:
-    StereoFrame16 current_frame = {};
-    StereoFrame16 backup_frame = {}; // TODO(PabloMK7): Check if we actually need this
-
     using OutputFormat = DspConfiguration::OutputFormat;
 
+    // Public only so BOOST_CLASS_VERSION below can name it.
     struct MixerState {
         std::array<float, 3> intermediate_mixer_volume = {};
 
@@ -49,15 +47,24 @@ private:
         OutputFormat output_format = OutputFormat::Stereo;
 
         template <class Archive>
-        void serialize(Archive& ar, const unsigned int) {
+        void serialize(Archive& ar, const unsigned int file_version) {
             ar & intermediate_mixer_volume;
             ar & aux_bus_enable;
             ar & intermediate_mix_buffer;
-            ar & delay_effect;
-            ar & reverb_effect;
+            // Version 1 added the effects. A version 0 state (written before they existed) has
+            // output_format straight after the mix buffer, and reading effects there would shift
+            // everything after the DSP, emulated memory included, out of alignment.
+            if (file_version >= 1) {
+                ar & delay_effect;
+                ar & reverb_effect;
+            }
             ar & output_format;
         }
     };
+
+private:
+    StereoFrame16 current_frame = {};
+    StereoFrame16 backup_frame = {}; // TODO(PabloMK7): Check if we actually need this
 
     MixerState state;
     MixerState backup_state;
@@ -89,3 +96,5 @@ private:
 };
 
 } // namespace AudioCore::HLE
+
+BOOST_CLASS_VERSION(AudioCore::HLE::Mixers::MixerState, 1)
