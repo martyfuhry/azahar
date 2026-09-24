@@ -109,6 +109,7 @@ enum class BooleanSetting(
         false
     ),
     CPU_JIT(SettingKeys.use_cpu_jit(), Settings.SECTION_CORE, true),
+    USE_FASTINTERP(SettingKeys.use_fastinterp(), Settings.SECTION_CORE, true),
     HW_SHADER(SettingKeys.use_hw_shader(), Settings.SECTION_RENDERER, true),
     SHADER_JIT(SettingKeys.use_shader_jit(), Settings.SECTION_RENDERER, true),
     VSYNC(
@@ -183,6 +184,7 @@ enum class BooleanSetting(
             VSYNC,
             DEBUG_RENDERER,
             CPU_JIT,
+            USE_FASTINTERP,
             ASYNC_CUSTOM_LOADING,
             SHADERS_ACCURATE_MUL,
             USE_ARTIC_BASE_CONTROLLER,

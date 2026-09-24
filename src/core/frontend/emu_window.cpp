@@ -76,49 +76,6 @@ Settings::StereoRenderOption EmuWindow::get3DMode() const {
     return render_3d_mode;
 }
 
-bool EmuWindow::IsWithinTouchscreen(const Layout::FramebufferLayout& layout, unsigned framebuffer_x,
-                                    unsigned framebuffer_y) {
-    // Only a window that actually shows the bottom screen may act as the DS touchscreen.
-    // This used to be a desktop-only test (`#ifndef ANDROID`) for the SeparateWindows layout,
-    // which is exactly the same question asked in a roundabout way: SeparateWindowsLayout()
-    // hands each window a SingleFrameLayout whose bottom_screen_enabled says whether that
-    // window is the bottom one. Every layout sets the flag, so asking the layout covers the
-    // desktop case unchanged *and* fixes Android, where the single-screen layouts left the
-    // top panel injecting touchscreen input (upstream #2020) - on the Thor the whole upper
-    // screen behaved like the DS touchscreen while the real bottom panel sat next to it.
-    if (!layout.bottom_screen_enabled) {
-        return false;
-    }
-
-    Settings::StereoRenderOption render_3d_mode = get3DMode();
-
-    if (framebuffer_x > layout.width / 2 &&
-        render_3d_mode == Settings::StereoRenderOption::SideBySideFull) {
-        framebuffer_x = static_cast<unsigned>(framebuffer_x - layout.width / 2);
-    }
-    if (render_3d_mode == Settings::StereoRenderOption::SideBySide) {
-        return (framebuffer_y >= layout.bottom_screen.top &&
-                framebuffer_y < layout.bottom_screen.bottom &&
-                ((framebuffer_x >= layout.bottom_screen.left / 2 &&
-                  framebuffer_x < layout.bottom_screen.right / 2) ||
-                 (framebuffer_x >= (layout.bottom_screen.left / 2) + (layout.width / 2) &&
-                  framebuffer_x < (layout.bottom_screen.right / 2) + (layout.width / 2))));
-    } else if (render_3d_mode == Settings::StereoRenderOption::CardboardVR) {
-        return (framebuffer_y >= layout.bottom_screen.top &&
-                framebuffer_y < layout.bottom_screen.bottom &&
-                ((framebuffer_x >= layout.bottom_screen.left &&
-                  framebuffer_x < layout.bottom_screen.right) ||
-                 (framebuffer_x >= layout.cardboard.bottom_screen_right_eye + (layout.width / 2) &&
-                  framebuffer_x < layout.cardboard.bottom_screen_right_eye +
-                                      layout.bottom_screen.GetWidth() + (layout.width / 2))));
-    } else {
-        return (framebuffer_y >= layout.bottom_screen.top &&
-                framebuffer_y < layout.bottom_screen.bottom &&
-                framebuffer_x >= layout.bottom_screen.left &&
-                framebuffer_x < layout.bottom_screen.right);
-    }
-}
-
 std::tuple<unsigned, unsigned> EmuWindow::ClipToTouchScreen(unsigned new_x, unsigned new_y) const {
 
     Settings::StereoRenderOption render_3d_mode = get3DMode();
@@ -157,7 +114,7 @@ void EmuWindow::CreateTouchState() {
 }
 
 bool EmuWindow::TouchPressed(unsigned framebuffer_x, unsigned framebuffer_y) {
-    if (!IsWithinTouchscreen(framebuffer_layout, framebuffer_x, framebuffer_y))
+    if (!framebuffer_layout.IsWithinTouchscreen(framebuffer_x, framebuffer_y))
         return false;
     Settings::StereoRenderOption render_3d_mode = get3DMode();
 
@@ -213,7 +170,7 @@ void EmuWindow::TouchMoved(unsigned framebuffer_x, unsigned framebuffer_y) {
     if (!framebuffer_layout.bottom_screen_enabled)
         return;
 
-    if (!IsWithinTouchscreen(framebuffer_layout, framebuffer_x, framebuffer_y))
+    if (!framebuffer_layout.IsWithinTouchscreen(framebuffer_x, framebuffer_y))
         std::tie(framebuffer_x, framebuffer_y) = ClipToTouchScreen(framebuffer_x, framebuffer_y);
 
     TouchPressed(framebuffer_x, framebuffer_y);
