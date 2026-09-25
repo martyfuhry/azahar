@@ -21,6 +21,7 @@ add_executable(tests
     audio_core/decoder_tests.cpp
     video_core/pica_types.cpp
     video_core/shader.cpp
+    video_core/vk_disk_cache_state.cpp
     audio_core/merryhime_3ds_audio/merry_audio/merry_audio.cpp
     audio_core/merryhime_3ds_audio/merry_audio/merry_audio.h
     audio_core/merryhime_3ds_audio/merry_audio/service_fixture.cpp
