@@ -7,6 +7,7 @@
 #include <bitset>
 
 #include "video_core/rasterizer_interface.h"
+#include "video_core/renderer_vulkan/vk_disk_cache_state.h"
 #include "video_core/renderer_vulkan/vk_graphics_pipeline.h"
 #include "video_core/renderer_vulkan/vk_resource_pool.h"
 #include "video_core/renderer_vulkan/vk_shader_disk_cache.h"
@@ -140,8 +141,8 @@ private:
     /// Returns the size the driver would serialize the current pipeline cache to, 0 if none
     std::size_t GetDriverPipelineCacheSize() const;
 
-    /// Returns the on-disk path of the driver pipeline cache for the current title and GPU
-    std::string GetDriverPipelineCachePath() const;
+    /// Returns the on-disk path of the driver pipeline cache for `program_id` on this GPU
+    std::string GetDriverPipelineCachePath(u64 program_id) const;
 
     /// Loads the shader disk cache
     void LoadDiskCache(const std::atomic_bool& stop_loading = std::atomic_bool{false},
@@ -181,8 +182,8 @@ private:
     // destroy the pipelines first. Moving this member after disk_caches is a use-after-free that
     // no compiler diagnostic and no test will catch.
     vk::UniquePipelineCache driver_pipeline_cache;
-    /// Serialized size of driver_pipeline_cache when it was last loaded or written to disk
-    std::size_t saved_driver_cache_size{0};
+    /// Which title the driver and shader caches were loaded for, and the last saved size
+    DiskCacheState disk_cache_state;
     vk::UniquePipelineLayout pipeline_layout;
     std::size_t num_worker_threads;
     Common::ThreadWorker pipeline_workers;

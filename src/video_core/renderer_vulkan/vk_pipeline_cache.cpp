@@ -179,8 +179,20 @@ void PipelineCache::QuiesceForDiskCacheTeardown() {
 
 void PipelineCache::LoadCache(const std::atomic_bool& stop_loading,
                               const VideoCore::DiskResourceLoadCallback& callback) {
+    // Loading a savestate rebuilds the renderer, and System::serialize switches the new one to
+    // the running title, which loads everything below and starts compiling every pipeline the
+    // transferable cache lists. A frontend that asks for the default disk resources after that
+    // (Android does, after an autosave resume) would block here until all of that compilation
+    // finished, then replace the driver cache it had filled with the stale copy on disk, unsaved,
+    // and compile every pipeline a second time.
+    if (disk_cache_state.IsLoadedFor(GetProgramID(), profile)) {
+        LOG_INFO(Render_Vulkan, "Disk caches for title_id={:016X} are already loaded",
+                 GetProgramID());
+        return;
+    }
     LoadDriverPipelineDiskCache(stop_loading, callback);
     LoadDiskCache(stop_loading, callback);
+    disk_cache_state.OnShaderCachesLoaded(GetProgramID(), profile);
 }
 
 void PipelineCache::SwitchCache(u64 title_id, const std::atomic_bool& stop_loading,
@@ -211,13 +223,15 @@ void PipelineCache::SwitchCache(u64 title_id, const std::atomic_bool& stop_loadi
 
     LOG_INFO(Render_Vulkan, "Switching pipeline cache to title_id={:016X}", title_id);
 
-    // Save current driver cache, update program ID and load the new driver cache
+    // Save current driver cache, update program ID and load the new driver cache. A renderer
+    // that has not loaded a title yet (the one a savestate load just built) has nothing to save.
     SaveDriverPipelineDiskCache();
     SetProgramID(title_id);
     LoadDriverPipelineDiskCache(stop_loading, nullptr);
 
     // Switch the disk shader cache after driver cache is switched
     SwitchDiskCache(title_id, stop_loading, callback);
+    disk_cache_state.OnShaderCachesLoaded(title_id, profile);
 }
 
 void PipelineCache::LoadDriverPipelineDiskCache(
@@ -227,6 +241,11 @@ void PipelineCache::LoadDriverPipelineDiskCache(
     // driver object; on Adreno the next lock of its internal mutex aborts the process with
     // "FORTIFY: pthread_mutex_lock called on a destroyed mutex".
     WaitForWorkers();
+
+    // Whatever the workers compiled into the cache being replaced would otherwise be lost. This
+    // saves under the title that cache was loaded for, not the program id set for the next load,
+    // and is a no-op when nothing was compiled or no title was loaded yet.
+    SaveDriverPipelineDiskCache();
 
     vk::PipelineCacheCreateInfo cache_info{};
 
@@ -265,11 +284,12 @@ void PipelineCache::LoadDriverPipelineDiskCache(
 
     // Try to load existing pipeline cache for this game/device combination
     const u64 program_id = GetProgramID();
-    const auto cache_file_path = GetDriverPipelineCachePath();
+    const auto cache_file_path = GetDriverPipelineCachePath(program_id);
 
     // Whatever load_cache ends up with is what is on disk (or nothing is), so a save that
-    // follows without any new compilation has nothing to add
-    SCOPE_EXIT({ saved_driver_cache_size = GetDriverPipelineCacheSize(); });
+    // follows without any new compilation has nothing to add. From here on the cache belongs to
+    // program_id, and is saved under that id however the current program id changes later.
+    SCOPE_EXIT({ disk_cache_state.OnDriverCacheLoaded(program_id, GetDriverPipelineCacheSize()); });
 
     std::vector<u8> cache_data;
     FileUtil::IOFile cache_file{cache_file_path, "rb"};
@@ -315,10 +335,10 @@ std::size_t PipelineCache::GetDriverPipelineCacheSize() const {
     return result == vk::Result::eSuccess ? size : 0;
 }
 
-std::string PipelineCache::GetDriverPipelineCachePath() const {
+std::string PipelineCache::GetDriverPipelineCachePath(u64 program_id) const {
     // Include both device info and program id in cache path to handle both GPU changes and
     // different games
-    return fmt::format("{}{:016X}-{:X}{:X}.bin", GetPipelineCacheDir(), GetProgramID(),
+    return fmt::format("{}{:016X}-{:X}{:X}.bin", GetPipelineCacheDir(), program_id,
                        instance.GetVendorID(), instance.GetDeviceID());
 }
 
@@ -331,17 +351,20 @@ void PipelineCache::SaveDriverPipelineDiskCache() {
     // The driver only grows its cache when a pipeline was actually compiled, so an unchanged
     // serialized size means the file on disk is still current. This is what keeps the
     // periodic and pause-time saves free in the common case.
+    // A cache that was never loaded for a title (a fresh renderer still at program id 0) is not
+    // saved at all: it would only write an empty 0000000000000000-*.bin.
     const std::size_t cache_size = GetDriverPipelineCacheSize();
-    if (cache_size == 0 || cache_size == saved_driver_cache_size) {
+    if (!disk_cache_state.ShouldSaveDriverCache(cache_size)) {
         return;
     }
+    const u64 program_id = *disk_cache_state.DriverCacheProgramId();
 
     if (!EnsureDirectories()) {
         LOG_ERROR(Render_Vulkan, "Unable to create pipeline cache directory");
         return;
     }
 
-    const auto cache_file_path = GetDriverPipelineCachePath();
+    const auto cache_file_path = GetDriverPipelineCachePath(program_id);
     const auto tmp_file_path = cache_file_path + ".tmp";
 
     const vk::Device device = instance.GetDevice();
@@ -369,9 +392,9 @@ void PipelineCache::SaveDriverPipelineDiskCache() {
         return;
     }
 
-    saved_driver_cache_size = cache_data.size();
-    LOG_INFO(Render_Vulkan, "Saved pipeline cache for title_id={:016X} with size {} KB",
-             GetProgramID(), cache_data.size() / 1024);
+    disk_cache_state.OnDriverCacheSaved(cache_data.size());
+    LOG_INFO(Render_Vulkan, "Saved pipeline cache for title_id={:016X} with size {} KB", program_id,
+             cache_data.size() / 1024);
 }
 
 void PipelineCache::LoadDiskCache(const std::atomic_bool& stop_loading,
