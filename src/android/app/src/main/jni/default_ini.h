@@ -499,6 +499,18 @@ static const char* android_config_default_file_content = (BOOST_HANA_STRING(R"(
 # Defaults to 0.
 )") DECLARE_KEY(init_ticks_override) BOOST_HANA_STRING(R"(
 
+# Where the emulated console takes its battery state from
+# 0: The host device's battery (default), 1: The fixed values below
+)") DECLARE_KEY(battery_state_source) BOOST_HANA_STRING(R"(
+
+# Whether the emulated console reports that it is charging when the source is Fixed
+# 0: Not charging, 1: Charging (default)
+)") DECLARE_KEY(battery_charging) BOOST_HANA_STRING(R"(
+
+# Battery level the emulated console reports when the source is Fixed. Range from 0 to 4.
+# Defaults to 0.
+)") DECLARE_KEY(battery_level) BOOST_HANA_STRING(R"(
+
 # Number of steps per hour reported by the pedometer. Range from 0 to 65,535.
 # Defaults to 0.
 )") DECLARE_KEY(steps_per_hour) BOOST_HANA_STRING(R"(
