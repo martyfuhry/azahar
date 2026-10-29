@@ -1,6 +1,6 @@
 // Copyright 2025-2026 Citra Emulator Project / Azahar Emulator Project
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// Licensed under GPLv3 or any later version
+// Refer to the LICENSE.txt file included.
 
 package org.citra.citra_emu.display
 
@@ -18,6 +18,7 @@ import android.view.SurfaceView
 import android.view.WindowManager
 import org.citra.citra_emu.NativeLibrary
 import org.citra.citra_emu.features.settings.model.BooleanSetting
+import org.citra.citra_emu.features.settings.model.CitraSettings
 import org.citra.citra_emu.features.settings.model.IntSetting
 import org.citra.citra_emu.utils.Log
 import org.citra.citra_emu.utils.RefreshRateUtil
@@ -240,8 +241,9 @@ class SecondaryDisplay(val context: Context) : DisplayManager.DisplayListener {
     }
 
     private fun isSecondaryDisplayWanted(): Boolean =
-        BooleanSetting.ENABLE_SECONDARY_DISPLAY.boolean &&
-            IntSetting.SECONDARY_DISPLAY_LAYOUT.int != SecondaryDisplayLayout.NONE.int
+        CitraSettings.activeSettings.get(BooleanSetting.ENABLE_SECONDARY_DISPLAY) &&
+            CitraSettings.activeSettings.get(IntSetting.SECONDARY_DISPLAY_LAYOUT) !=
+            SecondaryDisplayLayout.NONE.int
 
     private fun cancelDisplayRecheck() {
         handler.removeCallbacks(displayRecheck)
@@ -335,7 +337,12 @@ class SecondaryDisplayPresentation(
             }
         })
 
-        this.surfaceView.setOnTouchListener { _, event ->
+        this.surfaceView.setOnTouchListener { view, event ->
+            // Deliver the touch events as they arrive instead of batching them to the next
+            // frame.
+            if (event.actionMasked == MotionEvent.ACTION_DOWN) {
+                view.requestUnbufferedDispatch(event)
+            }
 
             val pointerIndex = event.actionIndex
             val pointerId = event.getPointerId(pointerIndex)

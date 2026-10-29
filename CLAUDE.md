@@ -69,12 +69,12 @@ The full CI toolchain lives in the Docker image `opensauce04/azahar-build-enviro
 
 - `clang-format` (config at `src/.clang-format`, local version 19) on every changed `.cpp`/`.h` under `src/`. Run `clang-format -i <file>` before committing.
 - No trailing whitespace anywhere, no tabs under `src/` (`hooks/pre-commit` enforces this; install with `ln -s ../../hooks/pre-commit .git/hooks/pre-commit`).
-- Every changed `.cpp/.h/.kt/.kts/.m/.mm` must start with the license header, and its year range must include the current year. Extend an existing range (`2015` → `2015-2026`) rather than replacing it:
+- Every changed `.cpp/.h/.kt/.kts/.m/.mm` must start with the license header, and its year range must include the current year. Extend an existing range (`2015` → `2015-2026`) rather than replacing it. Upstream relicensed to GPLv3+ in October 2026 and converts headers only on files it touches, so untouched files still say GPLv2. The fork's own files were deliberately left on the GPLv2 text at the October 2026 merge; whether to move them is Marty's decision, not something to do in passing. New files use the current text below. `tools/fix-license-headers.py <files>` rewrites old headers and bumps the year (`--read-only-run` to preview):
 
 ```cpp
 // Copyright 2026 Citra Emulator Project / Azahar Emulator Project
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// Licensed under GPLv3 or any later version
+// Refer to the LICENSE.txt file included.
 ```
 
 ## Architecture

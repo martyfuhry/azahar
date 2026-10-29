@@ -1,6 +1,6 @@
 // Copyright 2019-2026 Citra Emulator Project / Azahar Emulator Project
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// Licensed under GPLv3 or any later version
+// Refer to the LICENSE.txt file included.
 
 #include <algorithm>
 #include <array>
@@ -26,7 +26,7 @@
 #endif
 
 #include "common/common_paths.h"
-#include "common/dynamic_library/dynamic_library.h"
+#include "common/dynamic_library.h"
 #include "common/file_derived.h"
 #include "common/file_util.h"
 #include "common/logging/backend.h"
@@ -38,6 +38,7 @@
 #include "common/scope_exit.h"
 #include "common/settings.h"
 #include "common/string_util.h"
+#include "common/thread.h"
 #include "core/core.h"
 #include "core/frontend/applets/default_applets.h"
 #include "core/frontend/camera/factory.h"
@@ -148,6 +149,9 @@ std::condition_variable_any surface_cv;
 
 std::string inserted_cartridge;
 
+// OpenGL only: presents each frame as soon as the emulation thread has drawn it.
+std::jthread present_thread;
+
 // Android Multiplayer which can be initialized with parameters
 std::unique_ptr<AndroidMultiplayer> multiplayer{nullptr};
 std::shared_ptr<Network::AnnounceMultiplayerSession> announce_multiplayer_session;
@@ -162,6 +166,7 @@ static jobject ToJavaCoreError(Core::System::ResultStatus result) {
         {Core::System::ResultStatus::ErrorN3DSApplication, "ErrorN3DSApplication"},
         {Core::System::ResultStatus::ErrorCoreExceptionRaised, "ErrorCoreExceptionRaised"},
         {Core::System::ResultStatus::ErrorSavestateBuildMismatch, "ErrorSavestateBuildMismatch"},
+        {Core::System::ResultStatus::ErrorShaderCacheCrash, "ErrorShaderCacheCrash"},
         {Core::System::ResultStatus::ErrorUnknown, "ErrorUnknown"},
     };
 
@@ -192,7 +197,36 @@ static void LoadDiskCacheProgress(VideoCore::LoadCallbackStage stage, int progre
 
 static Camera::NDK::Factory* g_ndk_factory{};
 
+static void PresentLoop(std::stop_token stop_token) {
+    Common::SetCurrentThreadName("GLPresent");
+    while (!stop_token.stop_requested()) {
+        if (!window->WaitForFrame(std::chrono::milliseconds(100))) {
+            continue;
+        }
+        std::scoped_lock lock(surface_mutex);
+        if (stop_run || pause_emulation) {
+            continue;
+        }
+        window->TryPresenting();
+        // The secondary window outlives the Presentation that feeds it, so an existing window is
+        // not proof that anything is on screen. Presenting to a window with no surface is wasted
+        // work (an eglMakeCurrent/eglSwapBuffers pair on GL).
+        if (secondary_window && secondary_window->GetWindowInfo().render_surface) {
+            secondary_window->TryPresenting();
+        }
+    }
+    window->DonePresenting();
+    if (secondary_window) {
+        secondary_window->DonePresenting();
+    }
+}
+
 static void TryShutdown() {
+    if (present_thread.joinable()) {
+        present_thread.request_stop();
+        present_thread.join();
+    }
+
     std::scoped_lock surface_lock(surface_mutex);
 
     if (!window) {
@@ -547,6 +581,12 @@ private:
     Clock::time_point last_log = Clock::now();
 };
 
+static void WaitForEmulationSurfaces(std::unique_lock<std::recursive_mutex>& surface_lock) {
+    surface_cv.wait_for(surface_lock, std::chrono::seconds(2),
+                        [] { return s_secondary_surface != nullptr; });
+    surface_cv.wait(surface_lock, [] { return s_surface != nullptr; });
+}
+
 static Core::System::ResultStatus RunCitra(const std::string& filepath) {
     // Citra core only supports a single running instance
     std::scoped_lock lock(running_mutex);
@@ -571,6 +611,8 @@ static Core::System::ResultStatus RunCitra(const std::string& filepath) {
     // surfaceChanged/surfaceDestroyed callback from the UI thread cannot release or replace
     // s_surface/s_secondary_surface while they're still being used.
     std::unique_lock<std::recursive_mutex> surface_lock(surface_mutex);
+
+    WaitForEmulationSurfaces(surface_lock);
 
     // We also need to lock the surface mutex when System::Init() is called.
     // This is because save state saving and loading may call System::Init
@@ -603,10 +645,12 @@ static Core::System::ResultStatus RunCitra(const std::string& filepath) {
 
     const auto graphics_api = Settings::GetWorkingGraphicsAPI();
     EGLContext* shared_context;
+    bool opengl_windows = false;
     switch (graphics_api) {
 #ifdef ENABLE_OPENGL
     case Settings::GraphicsAPI::OpenGL:
         window = std::make_unique<EmuWindow_Android_OpenGL>(system, s_surface, false);
+        opengl_windows = true;
         shared_context = window->GetEGLContext();
         secondary_window = std::make_unique<EmuWindow_Android_OpenGL>(system, s_secondary_surface,
                                                                       true, shared_context);
@@ -625,6 +669,7 @@ static Core::System::ResultStatus RunCitra(const std::string& filepath) {
                      graphics_api);
 #ifdef ENABLE_OPENGL
         window = std::make_unique<EmuWindow_Android_OpenGL>(system, s_surface, false);
+        opengl_windows = true;
         shared_context = window->GetEGLContext();
         secondary_window = std::make_unique<EmuWindow_Android_OpenGL>(system, s_secondary_surface,
                                                                       true, shared_context);
@@ -710,7 +755,8 @@ static Core::System::ResultStatus RunCitra(const std::string& filepath) {
         {
             // The loop may be leaving on the guest's own request (a title powering off), in
             // which case nobody set stop_run. Set it before the windows go away so that the
-            // UI thread's doFrame() and isRunning() see the shutdown rather than a live core.
+            // GL present thread and the UI thread's isRunning() see the shutdown rather than a
+            // live core.
             std::scoped_lock pause_lock{paused_mutex};
             stop_run = true;
         }
@@ -722,6 +768,10 @@ static Core::System::ResultStatus RunCitra(const std::string& filepath) {
         }
         autosave_cv.notify_all();
     });
+
+    if (opengl_windows) {
+        present_thread = std::jthread(PresentLoop);
+    }
 
     system.RegisterCoreLoopThreadId();
 
@@ -912,6 +962,7 @@ void Java_org_citra_citra_1emu_NativeLibrary_secondarySurfaceChanged(JNIEnv* env
         LOG_WARNING(Frontend, "Secondary surface changed, but failed to acquire the native window");
         return;
     }
+    surface_cv.notify_all();
 
     bool notify = false;
     if (secondary_window) {
@@ -980,30 +1031,6 @@ void Java_org_citra_citra_1emu_NativeLibrary_surfaceDestroyed([[maybe_unused]] J
     ReleaseSurface(s_surface, window.get(), false);
 
     LOG_INFO(Frontend, "Surface Destroyed");
-}
-
-void Java_org_citra_citra_1emu_NativeLibrary_doFrame([[maybe_unused]] JNIEnv* env,
-                                                     [[maybe_unused]] jobject obj) {
-    if (stop_run || pause_emulation) {
-        return;
-    }
-    // The windows are reset by TryShutdown() on the emulation thread under surface_mutex.
-    // Checking stop_run alone leaves a window in which this Choreographer callback dereferences
-    // a window that is being destroyed. Rather than block the UI thread behind a boot or a
-    // savestate load (both hold the mutex for a long time), skip the frame when it is busy.
-    std::unique_lock lock{surface_mutex, std::try_to_lock};
-    if (!lock.owns_lock()) {
-        return;
-    }
-    if (window) {
-        window->TryPresenting();
-    }
-    // The secondary window outlives the Presentation that feeds it, so an existing window is not
-    // proof that anything is on screen. Presenting to a window with no surface is at best wasted
-    // work on the UI thread (a no-op on Vulkan, an eglMakeCurrent/eglSwapBuffers pair on GL).
-    if (secondary_window && secondary_window->GetWindowInfo().render_surface) {
-        secondary_window->TryPresenting();
-    }
 }
 
 void JNICALL Java_org_citra_citra_1emu_NativeLibrary_initializeGpuDriver(
@@ -1081,84 +1108,29 @@ jstring Java_org_citra_citra_1emu_NativeLibrary_getHomeMenuPath(JNIEnv* env,
     return ToJString(env, "");
 }
 
-static CompressionStatus GetCompressFileInfo(Loader::AppLoader::CompressFileInfo& out_info,
-                                             size_t& out_frame_size, const std::string& filepath,
-                                             bool compress) {
-
-    if (Service::FS::IsInstalledApplication(filepath)) {
-        return CompressionStatus::Installed_Application;
-    }
-
-    Loader::AppLoader::CompressFileInfo compress_info{};
-    compress_info.is_supported = false;
-    size_t frame_size{};
-    auto loader = Loader::GetLoader(filepath);
-    if (loader) {
-        compress_info = loader->GetCompressFileInfo();
-        frame_size = FileUtil::Z3DSWriteIOFile::DEFAULT_FRAME_SIZE;
-    } else {
-        bool is_compressed = false;
-        if (Service::AM::CheckCIAToInstall(filepath, is_compressed, compress ? true : false) ==
-            Service::AM::InstallStatus::Success) {
-            compress_info.is_supported = true;
-            compress_info.is_compressed = is_compressed;
-            compress_info.recommended_compressed_extension = "zcia";
-            compress_info.recommended_uncompressed_extension = "cia";
-            compress_info.underlying_magic = std::array<u8, 4>({'C', 'I', 'A', '\0'});
-            frame_size = FileUtil::Z3DSWriteIOFile::DEFAULT_CIA_FRAME_SIZE;
-            if (compress) {
-                auto meta_info = Service::AM::GetCIAInfos(filepath);
-                if (meta_info.Succeeded()) {
-                    const auto& meta_info_val = meta_info.Unwrap();
-                    std::vector<u8> value(sizeof(Service::AM::TitleInfo));
-                    memcpy(value.data(), &meta_info_val.first, sizeof(Service::AM::TitleInfo));
-                    compress_info.default_metadata.emplace("titleinfo", value);
-                    if (meta_info_val.second) {
-                        value.resize(sizeof(Loader::SMDH));
-                        memcpy(value.data(), meta_info_val.second.get(), sizeof(Loader::SMDH));
-                        compress_info.default_metadata.emplace("smdh", value);
-                    }
-                }
-            }
-        }
-    }
-
-    if (!compress_info.is_supported) {
-        LOG_ERROR(Frontend,
-                  "Error {} file {}, the selected file is not a compatible 3DS ROM format or is "
-                  "encrypted.",
-                  compress ? "compressing" : "decompressing", filepath);
-        return compress ? CompressionStatus::Compress_Unsupported
-                        : CompressionStatus::Decompress_Unsupported;
-    }
-    if (compress_info.is_compressed && compress) {
-        LOG_ERROR(Frontend, "Error compressing file {}, the selected file is already compressed",
-                  filepath);
-        return CompressionStatus::Compress_AlreadyCompressed;
-    }
-    if (!compress_info.is_compressed && !compress) {
-        LOG_ERROR(Frontend,
-                  "Error decompressing file {}, the selected file is already decompressed",
-                  filepath);
-        return CompressionStatus::Decompress_NotCompressed;
-    }
-
-    out_info = compress_info;
-    out_frame_size = frame_size;
-    return CompressionStatus::Success;
-}
-
 jint Java_org_citra_citra_1emu_NativeLibrary_compressFileNative(JNIEnv* env, jobject obj,
                                                                 jstring j_input_path,
                                                                 jstring j_output_path) {
     const std::string input_path = GetJString(env, j_input_path);
     const std::string output_path = GetJString(env, j_output_path);
 
-    Loader::AppLoader::CompressFileInfo compress_info{};
-    size_t frame_size{};
-    CompressionStatus stat = GetCompressFileInfo(compress_info, frame_size, input_path, true);
-    if (stat != CompressionStatus::Success) {
-        return static_cast<jint>(stat);
+    if (Service::FS::IsInstalledApplication(input_path)) {
+        return static_cast<jint>(CompressionStatus::Installed_Application);
+    }
+
+    auto loader_info = Loader::GetLoaderFileInfo(input_path);
+    if (!loader_info.is_valid || !loader_info.is_compress_supported) {
+        LOG_ERROR(
+            Frontend,
+            "Error compressing file {}, the selected file is not a compatible 3DS ROM format or is "
+            "encrypted.",
+            input_path);
+        return static_cast<jint>(CompressionStatus::Compress_Unsupported);
+    }
+    if (loader_info.is_compressed) {
+        LOG_ERROR(Frontend, "Error compressing file {}, the selected file is already compressed",
+                  input_path);
+        return static_cast<jint>(CompressionStatus::Compress_AlreadyCompressed);
     }
 
     auto progress = [](std::size_t processed, std::size_t total) {
@@ -1168,9 +1140,9 @@ jint Java_org_citra_citra_1emu_NativeLibrary_compressFileNative(JNIEnv* env, job
                                   static_cast<jlong>(processed));
     };
 
-    bool success =
-        FileUtil::CompressZ3DSFile(input_path, output_path, compress_info.underlying_magic,
-                                   frame_size, progress, compress_info.default_metadata);
+    bool success = FileUtil::CompressZ3DSFile(input_path, output_path, loader_info.underlying_magic,
+                                              loader_info.default_compress_frame_size, progress,
+                                              loader_info.default_metadata);
     if (!success) {
         FileUtil::Delete(output_path);
         return static_cast<jint>(CompressionStatus::Compress_Failed);
@@ -1185,11 +1157,24 @@ jint Java_org_citra_citra_1emu_NativeLibrary_decompressFileNative(JNIEnv* env, j
     const std::string input_path = GetJString(env, j_input_path);
     const std::string output_path = GetJString(env, j_output_path);
 
-    Loader::AppLoader::CompressFileInfo compress_info{};
-    size_t frame_size{};
-    CompressionStatus stat = GetCompressFileInfo(compress_info, frame_size, input_path, false);
-    if (stat != CompressionStatus::Success) {
-        return static_cast<jint>(stat);
+    if (Service::FS::IsInstalledApplication(input_path)) {
+        return static_cast<jint>(CompressionStatus::Installed_Application);
+    }
+
+    auto loader_info = Loader::GetLoaderFileInfo(input_path);
+    if (!loader_info.is_valid || !loader_info.is_compress_supported) {
+        LOG_ERROR(Frontend,
+                  "Error decompressing file {}, the selected file is not a compatible 3DS ROM "
+                  "format or is "
+                  "encrypted.",
+                  input_path);
+        return static_cast<jint>(CompressionStatus::Decompress_Unsupported);
+    }
+    if (!loader_info.is_compressed) {
+        LOG_ERROR(Frontend,
+                  "Error decompressing file {}, the selected file is already decompressed",
+                  input_path);
+        return static_cast<jint>(CompressionStatus::Decompress_NotCompressed);
     }
 
     auto progress = [](std::size_t processed, std::size_t total) {
@@ -1217,14 +1202,15 @@ jstring Java_org_citra_citra_1emu_NativeLibrary_getRecommendedExtension(
 
     auto loader = Loader::GetLoader(input_path);
     if (loader) {
-        auto compress_info = loader->GetCompressFileInfo();
-        if (compress_info.is_supported) {
-            compressed_ext = compress_info.recommended_compressed_extension;
-            uncompressed_ext = compress_info.recommended_uncompressed_extension;
+        auto loader_info = loader->GetLoaderFileInfo();
+        if (loader_info.is_valid && loader_info.is_compress_supported) {
+            compressed_ext = loader_info.recommended_compressed_extension;
+            uncompressed_ext = loader_info.recommended_plain_extension;
         }
     } else {
         bool is_compressed = false;
-        if (Service::AM::CheckCIAToInstall(input_path, is_compressed, true) ==
+        bool is_bundled = false;
+        if (Service::AM::CheckCIAToInstall(input_path, is_compressed, is_bundled) ==
             Service::AM::InstallStatus::Success) {
             compressed_ext = "zcia";
             uncompressed_ext = "cia";

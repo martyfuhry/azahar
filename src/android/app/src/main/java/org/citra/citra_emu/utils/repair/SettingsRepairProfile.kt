@@ -7,7 +7,6 @@ package org.citra.citra_emu.utils.repair
 import org.citra.citra_emu.features.settings.model.AbstractSetting
 import org.citra.citra_emu.features.settings.model.BooleanSetting
 import org.citra.citra_emu.features.settings.model.IntSetting
-import org.citra.citra_emu.utils.Log
 
 /**
  * The tier tables: which settings this fork claims to know better about, and how strongly.
@@ -195,33 +194,29 @@ object SettingsRepairProfile {
     fun entries(): List<RepairEntry> = tier1() + tier2() + tier3()
 
     /** The settings the pass may write, by key, so a change can be applied to the right one. */
-    fun settingFor(key: String): AbstractSetting? = BooleanSetting.from(key) ?: IntSetting.from(key)
+    fun settingFor(key: String): AbstractSetting<*>? =
+        BooleanSetting.from(key) ?: IntSetting.from(key)
 
-    private fun entry(
-        setting: AbstractSetting,
+    /**
+     * The opinion is typed by the setting, so a mistake in the table — an `Int` opinion for a
+     * `Boolean` setting, which would otherwise show up as a setting repaired on every single
+     * launch because the strings never compare equal — does not compile.
+     */
+    private fun <T> entry(
+        setting: AbstractSetting<T>,
         tier: RepairTier,
-        opinion: Any,
+        opinion: T,
         why: String
-    ): RepairEntry {
-        if (setting.defaultValue.javaClass != opinion.javaClass) {
-            // A typed mistake in the table would otherwise show up as a setting that is repaired
-            // on every single launch, forever, because the strings never compare equal.
-            Log.error(
-                "[SettingsRepair] ${setting.key} has a ${opinion.javaClass.simpleName} opinion " +
-                    "but a ${setting.defaultValue.javaClass.simpleName} default"
-            )
-        }
-        return RepairEntry(
-            key = setting.key!!,
-            tier = tier,
-            opinion = opinion.toString(),
-            upstreamDefault = setting.defaultValue.toString(),
-            why = why
-        )
-    }
+    ): RepairEntry = RepairEntry(
+        key = setting.key,
+        tier = tier,
+        opinion = setting.valueToString(opinion),
+        upstreamDefault = setting.valueToString(setting.defaultValue),
+        why = why
+    )
 
-    private fun taste(setting: AbstractSetting): RepairEntry = RepairEntry(
-        key = setting.key!!,
+    private fun taste(setting: AbstractSetting<*>): RepairEntry = RepairEntry(
+        key = setting.key,
         tier = RepairTier.TASTE,
         opinion = setting.defaultValue.toString(),
         upstreamDefault = setting.defaultValue.toString(),

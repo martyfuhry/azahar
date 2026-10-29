@@ -12,12 +12,9 @@ import androidx.annotation.StringRes
 import androidx.preference.PreferenceManager
 import org.citra.citra_emu.CitraApplication
 import org.citra.citra_emu.R
-import org.citra.citra_emu.features.settings.model.AbstractBooleanSetting
-import org.citra.citra_emu.features.settings.model.AbstractIntSetting
-import org.citra.citra_emu.features.settings.model.AbstractSetting
 import org.citra.citra_emu.features.settings.model.BooleanSetting
+import org.citra.citra_emu.features.settings.model.CitraSettings
 import org.citra.citra_emu.features.settings.model.IntSetting
-import org.citra.citra_emu.features.settings.model.Settings
 
 /**
  * The four things a player can pick on the Graphics screen. Ordinals are the persisted values
@@ -133,97 +130,97 @@ object GraphicsPresets {
             return fit.toInt().coerceIn(1, MAX_USEFUL_SCALE)
         }
 
-    /** The internal resolution factor [preset] uses on this device. */
-    fun resolutionFor(preset: GraphicsPreset): Int {
+    /**
+     * The internal resolution factor [preset] uses on this device. Custom is whatever is set,
+     * read from [settings].
+     */
+    fun resolutionFor(
+        preset: GraphicsPreset,
+        settings: CitraSettings = CitraSettings.activeSettings
+    ): Int {
         val best = nativeScale
         return when (preset) {
             GraphicsPreset.BEST_LOOKING -> best
             GraphicsPreset.BALANCED -> (best - 1).coerceAtLeast(1)
             GraphicsPreset.BATTERY_SAVER -> (best - 2).coerceAtLeast(1)
-            GraphicsPreset.CUSTOM -> IntSetting.RESOLUTION_FACTOR.int
+            GraphicsPreset.CUSTOM -> settings.get(IntSetting.RESOLUTION_FACTOR)
         }
     }
 
     /**
-     * The settings [preset] owns, with the value it gives each one. Every entry here is also a
-     * setting shown further down the Graphics screen, so the player can always see what the
-     * preset did and change it — which is what flips the preset to Custom.
+     * The settings [preset] owns, with the value it gives each one, as a profile the shared
+     * [SettingsProfile] writer understands. Every entry here is also a setting shown further down
+     * the Graphics screen, so the player can always see what the preset did and change it — which
+     * is what flips the preset to Custom.
      */
-    private fun valuesFor(preset: GraphicsPreset): List<Pair<AbstractSetting, Any>> = listOf(
-        IntSetting.RESOLUTION_FACTOR to resolutionFor(preset),
-        IntSetting.TEXTURE_FILTER to TEXTURE_FILTER_NONE,
-        IntSetting.TEXTURE_SAMPLING to TEXTURE_SAMPLING_GAME_CONTROLLED,
-        BooleanSetting.HW_SHADER to true,
-        BooleanSetting.ASYNC_SHADERS to true,
-        BooleanSetting.DISK_SHADER_CACHE to true,
-        BooleanSetting.SHADERS_ACCURATE_MUL to true,
-        BooleanSetting.LINEAR_FILTERING to true
+    fun profileFor(preset: GraphicsPreset): List<ProfileEntry<*>> = listOf(
+        ProfileEntry(IntSetting.RESOLUTION_FACTOR, resolutionFor(preset)),
+        ProfileEntry(IntSetting.TEXTURE_FILTER, TEXTURE_FILTER_NONE),
+        ProfileEntry(IntSetting.TEXTURE_SAMPLING, TEXTURE_SAMPLING_GAME_CONTROLLED),
+        ProfileEntry(BooleanSetting.HW_SHADER, true),
+        ProfileEntry(BooleanSetting.ASYNC_SHADERS, true),
+        ProfileEntry(BooleanSetting.DISK_SHADER_CACHE, true),
+        ProfileEntry(BooleanSetting.SHADERS_ACCURATE_MUL, true),
+        ProfileEntry(BooleanSetting.LINEAR_FILTERING, true)
     )
 
-    /** [preset] as a profile the shared [SettingsProfile] writer understands. */
-    fun profileFor(preset: GraphicsPreset): List<ProfileEntry> =
-        valuesFor(preset).map { (setting, value) -> ProfileEntry(setting) { set(setting, value) } }
-
-    /** True when every setting [preset] owns already holds the preset's value. */
-    fun matches(preset: GraphicsPreset): Boolean =
-        preset != GraphicsPreset.CUSTOM && valuesFor(preset).all { (s, v) -> holds(s, v) }
+    /** True when every setting [preset] owns already holds the preset's value in [settings]. */
+    fun matches(preset: GraphicsPreset, settings: CitraSettings): Boolean =
+        preset != GraphicsPreset.CUSTOM && profileFor(preset).all { it.holds(settings) }
 
     /**
      * The preset in force. Nothing stored yet means nothing has been picked and nothing has been
-     * hand-edited either, so name the preset the current configuration already matches rather
-     * than calling a stock setup "Custom".
+     * hand-edited either, so name the preset [settings] already matches rather than calling a
+     * stock setup "Custom".
      */
-    var active: GraphicsPreset
-        get() {
-            val stored = preferences.getInt(Settings.PREF_GRAPHICS_PRESET, UNSET)
-            if (stored != UNSET) {
-                return GraphicsPreset.from(stored)
-            }
-            // Best first: on a low-resolution panel two presets can land on the same factor,
-            // and the better-looking name is the one to show.
-            return listOf(
-                GraphicsPreset.BEST_LOOKING,
-                GraphicsPreset.BALANCED,
-                GraphicsPreset.BATTERY_SAVER
-            ).firstOrNull { matches(it) } ?: GraphicsPreset.CUSTOM
+    fun active(settings: CitraSettings): GraphicsPreset {
+        val stored = preferences.getInt(CitraSettings.PREF_GRAPHICS_PRESET, UNSET)
+        if (stored != UNSET) {
+            return GraphicsPreset.from(stored)
         }
-        set(value) {
-            preferences.edit().putInt(Settings.PREF_GRAPHICS_PRESET, value.value).apply()
-        }
+        // Best first: on a low-resolution panel two presets can land on the same factor,
+        // and the better-looking name is the one to show.
+        return listOf(
+            GraphicsPreset.BEST_LOOKING,
+            GraphicsPreset.BALANCED,
+            GraphicsPreset.BATTERY_SAVER
+        ).firstOrNull { matches(it, settings) } ?: GraphicsPreset.CUSTOM
+    }
+
+    /** Remembers [preset] as the one in force. */
+    fun setActive(preset: GraphicsPreset) {
+        preferences.edit().putInt(CitraSettings.PREF_GRAPHICS_PRESET, preset.value).apply()
+    }
 
     /**
-     * Writes [preset] and remembers it. Returns the number of settings changed.
+     * Writes [preset] into [settings] and config.ini and remembers it. Returns the number of
+     * settings changed.
      *
      * Custom is not a configuration, it is the absence of one: selecting it only stops the
      * preset from claiming credit for whatever the player has set by hand.
      */
-    fun apply(settings: Settings, preset: GraphicsPreset): Int {
+    fun apply(settings: CitraSettings, preset: GraphicsPreset): Int {
         if (preset == GraphicsPreset.CUSTOM) {
-            active = preset
+            setActive(preset)
             return 0
         }
         val applied = SettingsProfile.write(settings, profileFor(preset), force = true)
-        active = preset
+        setActive(preset)
         Log.info("[GraphicsPresets] Applied $preset: ${applied.joinToString(", ")}")
         return applied.size
     }
 
     /**
      * Called from the settings screen after the player edits a setting by hand. If the edit
-     * moved a setting the active preset owns away from the preset's value, the configuration is
-     * no longer that preset and the picker has to say so.
+     * moved a setting the active preset owns away from the preset's value, the configuration in
+     * [settings] is no longer that preset and the picker has to say so.
      */
-    fun onSettingEdited(setting: AbstractSetting) {
-        val preset = active
-        if (preset == GraphicsPreset.CUSTOM) {
+    fun onSettingsEdited(settings: CitraSettings) {
+        val preset = active(settings)
+        if (preset == GraphicsPreset.CUSTOM || matches(preset, settings)) {
             return
         }
-        val key = setting.key ?: return
-        val owned = valuesFor(preset).firstOrNull { it.first.key == key } ?: return
-        if (holds(owned.first, owned.second)) {
-            return
-        }
-        active = GraphicsPreset.CUSTOM
+        setActive(GraphicsPreset.CUSTOM)
     }
 
     /** The one-line explanation shown under [preset] in the picker, in plain language. */
@@ -256,19 +253,5 @@ object GraphicsPresets {
             return null
         }
         return Pair(maxOf(width, height).toFloat(), minOf(width, height).toFloat())
-    }
-
-    private fun set(setting: AbstractSetting, value: Any) {
-        when {
-            setting is AbstractIntSetting && value is Int -> setting.int = value
-            setting is AbstractBooleanSetting && value is Boolean -> setting.boolean = value
-            else -> Log.error("[GraphicsPresets] Cannot write ${setting.key} = $value")
-        }
-    }
-
-    private fun holds(setting: AbstractSetting, value: Any): Boolean = when {
-        setting is AbstractIntSetting && value is Int -> setting.int == value
-        setting is AbstractBooleanSetting && value is Boolean -> setting.boolean == value
-        else -> false
     }
 }

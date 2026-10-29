@@ -11,10 +11,7 @@ import java.util.Locale
 import java.util.TimeZone
 import org.citra.citra_emu.BuildConfig
 import org.citra.citra_emu.CitraApplication
-import org.citra.citra_emu.features.settings.model.AbstractBooleanSetting
-import org.citra.citra_emu.features.settings.model.AbstractIntSetting
 import org.citra.citra_emu.features.settings.model.AbstractSetting
-import org.citra.citra_emu.features.settings.model.Settings
 import org.citra.citra_emu.features.settings.utils.SettingsFile
 import org.citra.citra_emu.utils.repair.ForkProfileChange
 import org.citra.citra_emu.utils.repair.ForkProfileRecord
@@ -140,9 +137,9 @@ object SettingsRepair {
             return
         }
 
-        // Also syncs the settings singletons with the file, so a value written below starts from
-        // what is actually on disk rather than from a stale in-memory copy.
-        val sections = SettingsFile.readFile(SettingsFile.FILE_NAME_CONFIG)
+        // Raw, section by section: the planner wants to know whether a key is present and what
+        // string it carries, not what it would parse to.
+        val sections = SettingsProfile.readConfig()
         val entries = SettingsRepairProfile.entries()
         val outcome = SettingsRepairPlanner.plan(
             entries = entries,
@@ -153,15 +150,14 @@ object SettingsRepair {
                     null
                 } else {
                     // A key with no value is a key nobody has ever decided, which is how an
-                    // absent one reads too; SettingsFile drops blank values for us.
-                    sections[setting.section]?.getSetting(key)?.valueAsString
+                    // absent one reads too; readConfig drops blank values for us.
+                    sections[setting.section]?.get(key)
                 }
             },
             record = record
         )
 
-        val settings = Settings()
-        val written = outcome.changes.filter { apply(settings, it) }
+        val written = outcome.changes.filter { apply(it) }
         for (change in written) {
             Log.info(
                 "[SettingsRepair] ${change.key}: ${change.from} -> ${change.to} " +
@@ -228,7 +224,6 @@ object SettingsRepair {
         if (changes.isEmpty()) {
             return
         }
-        val settings = Settings()
         for (change in changes) {
             val restored = RepairChange(
                 key = change.key,
@@ -238,7 +233,7 @@ object SettingsRepair {
                 rule = change.rule,
                 why = "Undone by the user."
             )
-            if (apply(settings, restored)) {
+            if (apply(restored)) {
                 Log.info(
                     "[SettingsRepair] Undone: ${change.key}: ${change.to} -> ${change.from}"
                 )
@@ -284,18 +279,18 @@ object SettingsRepair {
         Log.info("[SettingsRepair] The full profile was applied; provenance reset to match it.")
     }
 
-    private fun apply(settings: Settings, change: RepairChange): Boolean {
-        val setting: AbstractSetting = SettingsRepairProfile.settingFor(change.key) ?: return false
-        when {
-            setting is AbstractBooleanSetting -> setting.boolean = change.to.toBoolean()
+    /**
+     * Writes [change] to config.ini (and to the live settings, if they are loaded). A value the
+     * setting cannot parse is not written, and reports as not applied.
+     */
+    private fun apply(change: RepairChange): Boolean {
+        val setting = SettingsRepairProfile.settingFor(change.key) ?: return false
+        return write(setting, change.to)
+    }
 
-            setting is AbstractIntSetting -> {
-                setting.int = change.to.toIntOrNull() ?: return false
-            }
-
-            else -> return false
-        }
-        settings.saveSetting(setting, SettingsFile.FILE_NAME_CONFIG)
+    private fun <T> write(setting: AbstractSetting<T>, raw: String): Boolean {
+        val value = setting.valueFromString(raw) ?: return false
+        SettingsProfile.persistGlobal(setting, value)
         return true
     }
 

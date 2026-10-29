@@ -1,6 +1,6 @@
 // Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// Licensed under GPLv3 or any later version
+// Refer to the LICENSE.txt file included.
 
 package org.citra.citra_emu
 
@@ -15,6 +15,7 @@ import android.os.Bundle
 import android.os.Environment
 import android.provider.OpenableColumns
 import android.text.Html
+import android.text.TextUtils
 import android.text.method.LinkMovementMethod
 import android.view.Surface
 import android.view.View
@@ -179,7 +180,6 @@ object NativeLibrary {
     // Surface Handling
     external fun surfaceChanged(surf: Surface)
     external fun surfaceDestroyed()
-    external fun doFrame()
 
     // Second window
     external fun secondarySurfaceChanged(secondary_surface: Surface)
@@ -338,7 +338,10 @@ object NativeLibrary {
 
             CoreError.ErrorSavestate -> {
                 title = emulationActivity.getString(R.string.save_load_error)
-                message = details
+                message = emulationActivity.getString(
+                    R.string.savestate_error_message,
+                    TextUtils.htmlEncode(details)
+                )
                 canContinue = true
             }
 
@@ -364,6 +367,12 @@ object NativeLibrary {
                 title = emulationActivity.getString(R.string.core_error_savestate_build_mismatch)
                 message =
                     emulationActivity.getString(R.string.savestate_build_mismatch_message, details)
+                canContinue = true
+            }
+
+            CoreError.ErrorShaderCacheCrash -> {
+                title = emulationActivity.getString(R.string.shader_cache_crash)
+                message = emulationActivity.getString(R.string.shader_cache_crash_message)
                 canContinue = true
             }
 
@@ -445,11 +454,11 @@ object NativeLibrary {
             } else {
                 alertResult = false
                 builder
-                    .setPositiveButton(android.R.string.yes) { _: DialogInterface, _: Int ->
+                    .setPositiveButton(android.R.string.ok) { _: DialogInterface, _: Int ->
                         alertResult = true
                         synchronized(alertLock) { alertLock.notify() }
                     }
-                    .setNegativeButton(android.R.string.no) { _: DialogInterface, _: Int ->
+                    .setNegativeButton(android.R.string.cancel) { _: DialogInterface, _: Int ->
                         alertResult = false
                         synchronized(alertLock) { alertLock.notify() }
                     }
@@ -1090,7 +1099,8 @@ object NativeLibrary {
         ErrorCoreExceptionRaised(14, R.string.core_error_core_exception_raised),
         ErrorSavestateBuildMismatch(15, R.string.core_error_savestate_build_mismatch),
         ShutdownRequested(16, R.string.core_error_shutdown_requested),
-        ErrorUnknown(17, R.string.core_error_unknown);
+        ErrorUnknown(17, R.string.core_error_unknown),
+        ErrorShaderCacheCrash(18, R.string.core_error_shader_cache_crash);
 
         companion object {
             fun fromInt(value: Int): CoreError = entries.find { it.value == value } ?: ErrorUnknown

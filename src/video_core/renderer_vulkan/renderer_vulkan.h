@@ -1,6 +1,6 @@
 // Copyright 2023-2026 Citra Emulator Project / Azahar Emulator Project
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// Licensed under GPLv3 or any later version
+// Refer to the LICENSE.txt file included.
 
 #pragma once
 
@@ -95,6 +95,7 @@ private:
                                      const Pica::FramebufferConfig& framebuffer);
     void ConfigureRenderPipeline();
     void PrepareRendertarget();
+    void LimitFramesAheadOfGpu();
     void RenderScreenshot();
     void RenderScreenshotWithStagingCopy();
     bool TryRenderScreenshotWithHostMemory();
@@ -164,6 +165,7 @@ private:
     bool secondaryWindowEnabled;
     bool screenRendered;
     bool presentation_lost_reported{false};
+    u64 previous_frame_tick{};
 };
 
 } // namespace Vulkan

@@ -11,8 +11,9 @@ import org.citra.citra_emu.CitraApplication
 import org.citra.citra_emu.display.ScreenLayout
 import org.citra.citra_emu.display.SecondaryDisplayLayout
 import org.citra.citra_emu.features.settings.model.BooleanSetting
+import org.citra.citra_emu.features.settings.model.CitraSettings
 import org.citra.citra_emu.features.settings.model.IntSetting
-import org.citra.citra_emu.features.settings.model.Settings
+import org.citra.citra_emu.features.settings.utils.SettingsFile
 
 /**
  * The out-of-the-box configuration for the AYN Thor, whose two built-in panels (6" 1080x1920
@@ -74,57 +75,34 @@ object ThorDefaults {
      * that a Thor is configured the same way whatever the upstream defaults happen to be, and
      * the "Thor defaults" action has to be able to put them back.
      */
-    private fun profile(): List<ProfileEntry> = listOf(
+    private fun profile(): List<ProfileEntry<*>> = listOf(
         // Two panels, one 3DS screen each, top on top.
-        ProfileEntry(BooleanSetting.ENABLE_SECONDARY_DISPLAY) {
-            BooleanSetting.ENABLE_SECONDARY_DISPLAY.boolean = true
-        },
-        ProfileEntry(IntSetting.SCREEN_LAYOUT) {
-            IntSetting.SCREEN_LAYOUT.int = ScreenLayout.SINGLE_SCREEN.int
-        },
-        ProfileEntry(IntSetting.SECONDARY_DISPLAY_LAYOUT) {
-            IntSetting.SECONDARY_DISPLAY_LAYOUT.int = SecondaryDisplayLayout.REVERSE_PRIMARY.int
-        },
-        ProfileEntry(BooleanSetting.SWAP_SCREEN) {
-            BooleanSetting.SWAP_SCREEN.boolean = false
-        },
+        ProfileEntry(BooleanSetting.ENABLE_SECONDARY_DISPLAY, true),
+        ProfileEntry(IntSetting.SCREEN_LAYOUT, ScreenLayout.SINGLE_SCREEN.int),
+        ProfileEntry(
+            IntSetting.SECONDARY_DISPLAY_LAYOUT,
+            SecondaryDisplayLayout.REVERSE_PRIMARY.int
+        ),
+        ProfileEntry(BooleanSetting.SWAP_SCREEN, false),
         // Vulkan on the Adreno 740.
-        ProfileEntry(IntSetting.GRAPHICS_API) {
-            IntSetting.GRAPHICS_API.int = GRAPHICS_API_VULKAN
-        },
-        ProfileEntry(BooleanSetting.VSYNC) {
-            BooleanSetting.VSYNC.boolean = false
-        },
-        ProfileEntry(BooleanSetting.USE_FRAME_LIMIT) {
-            BooleanSetting.USE_FRAME_LIMIT.boolean = true
-        },
-        ProfileEntry(IntSetting.FRAME_LIMIT) {
-            IntSetting.FRAME_LIMIT.int = FRAME_LIMIT
-        },
-        ProfileEntry(IntSetting.CPU_CLOCK_SPEED) {
-            IntSetting.CPU_CLOCK_SPEED.int = CPU_CLOCK_PERCENTAGE
-        },
+        ProfileEntry(IntSetting.GRAPHICS_API, GRAPHICS_API_VULKAN),
+        ProfileEntry(BooleanSetting.VSYNC, false),
+        ProfileEntry(BooleanSetting.USE_FRAME_LIMIT, true),
+        ProfileEntry(IntSetting.FRAME_LIMIT, FRAME_LIMIT),
+        ProfileEntry(IntSetting.CPU_CLOCK_SPEED, CPU_CLOCK_PERCENTAGE),
         // Audio.
-        ProfileEntry(BooleanSetting.ENABLE_AUDIO_STRETCHING) {
-            BooleanSetting.ENABLE_AUDIO_STRETCHING.boolean = true
-        },
+        ProfileEntry(BooleanSetting.ENABLE_AUDIO_STRETCHING, true),
         // Lifecycle: the lid and the AYN launcher background the app constantly, so the
         // autosave has to come back without asking. Perf logging stays off.
-        ProfileEntry(IntSetting.AUTOSAVE_MODE) {
-            IntSetting.AUTOSAVE_MODE.int = AUTOSAVE_MODE_ALWAYS
-        },
+        ProfileEntry(IntSetting.AUTOSAVE_MODE, AUTOSAVE_MODE_ALWAYS),
         // A kill during play is the case the pause-time autosave cannot cover, so the profile
         // takes one every few minutes as well. The value is read from the setting's own default
         // rather than restated: this entry only runs at first run (or when the profile is
         // reapplied from the settings screen), so on an install that has already had its first
         // run it does nothing, and a restated literal that later drifted from the compiled
         // default would be a difference nobody would ever see take effect.
-        ProfileEntry(IntSetting.AUTOSAVE_INTERVAL) {
-            IntSetting.AUTOSAVE_INTERVAL.int = IntSetting.AUTOSAVE_INTERVAL.defaultValue
-        },
-        ProfileEntry(IntSetting.PERF_LOG_INTERVAL) {
-            IntSetting.PERF_LOG_INTERVAL.int = 0
-        }
+        ProfileEntry(IntSetting.AUTOSAVE_INTERVAL, IntSetting.AUTOSAVE_INTERVAL.defaultValue),
+        ProfileEntry(IntSetting.PERF_LOG_INTERVAL, 0)
         // Everything that decides how a game looks comes from the graphics preset instead, so
         // there is one definition of "4x, no texture filter, shader caches on" and it works out
         // the resolution from the panel rather than assuming a Thor-sized one.
@@ -170,7 +148,9 @@ object ThorDefaults {
         // unreadable config.ini must not be fatal: a wrong default is a nuisance, a crash
         // before the first activity is not recoverable from the device.
         try {
-            apply(Settings(), force = false)
+            // A scratch instance: nothing has loaded the live settings yet at this point, and
+            // whoever does will read these values back from the file.
+            apply(CitraSettings(), force = false)
             // Only now, and only here. The marker means "the first-run pass has happened", so it
             // is set when the pass completes and not when it merely starts: it used to be written
             // unconditionally from inside apply(), which meant a pass that threw part-way through
@@ -192,20 +172,28 @@ object ThorDefaults {
     }
 
     /**
-     * Writes the profile to config.ini and returns the number of settings changed.
+     * Writes the profile into [settings] and config.ini and returns the number of settings
+     * changed.
      *
      * With [force] off, settings config.ini already carries a value for are left alone. With
      * [force] on (the settings action) every value in the profile is written. Marking the pass as
      * done is the caller's job — see [applyOnFirstRun] and [markApplied] — so that a pass which
      * never ran is never recorded as having run.
      */
-    fun apply(settings: Settings, force: Boolean): Int {
+    fun apply(settings: CitraSettings, force: Boolean): Int {
         val applied = SettingsProfile.write(settings, profile(), force)
 
         // Claim the preset only if the configuration really is it: on the non-forcing first-run
         // pass some graphics keys may have been left alone because config.ini already had them.
-        if (GraphicsPresets.matches(GraphicsPreset.BEST_LOOKING)) {
-            GraphicsPresets.active = GraphicsPreset.BEST_LOOKING
+        // Judged against the file with [settings] laid over it: on the first-run path [settings]
+        // is a scratch instance that only holds what this pass wrote, and from the settings
+        // screen it carries edits the file has not seen yet.
+        val effective = CitraSettings().also {
+            SettingsFile.loadSettings(it)
+            it.mergeSettings(settings)
+        }
+        if (GraphicsPresets.matches(GraphicsPreset.BEST_LOOKING, effective)) {
+            GraphicsPresets.setActive(GraphicsPreset.BEST_LOOKING)
         }
 
         val how = if (force) "on request" else "on first run"

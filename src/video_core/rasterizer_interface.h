@@ -1,9 +1,10 @@
 // Copyright 2015-2026 Citra Emulator Project / Azahar Emulator Project
-// Licensed under GPLv2 or any later version
-// Refer to the license.txt file included.
+// Licensed under GPLv3 or any later version
+// Refer to the LICENSE.txt file included.
 
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <functional>
 #include "common/common_types.h"
@@ -94,6 +95,16 @@ public:
      * changed since the last call, as the core invokes it periodically. Emulation thread only.
      */
     virtual void FlushDiskResources() {}
+#ifdef ENABLE_FREECAM
+    virtual void SetFreeCam([[maybe_unused]] const std::array<f32, 16>& matrix,
+                            [[maybe_unused]] bool skip_2d) {}
+#endif
+
+    /// Returns true when the emulator crashed the last time it loaded the disk resources of the
+    /// title, so loading them again may crash it again.
+    virtual bool DiskResourcesLoadCrashed([[maybe_unused]] u64 title_id) {
+        return false;
+    }
 
     static void SetSwitchDiskResourcesCallback(const DiskResourceLoadCallback& callback) {
         switch_disk_resources_callback = callback;
