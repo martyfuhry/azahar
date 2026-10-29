@@ -86,6 +86,20 @@ class MainActivity :
         const val KEY_SETUP_CURRENT_PAGE = "SetupCurrentPage"
     }
 
+    /**
+     * The multiplayer announcer reads the CFG username off the emulated NAND, which formats and
+     * writes the config savegame on first use. Without a usable data directory the native side
+     * falls back to "/" and that write hits an assert, so the whole app died on the UI thread
+     * before the directory prompt could ever appear (a stale or revoked SAF grant is enough to
+     * get there). Only touch it once the directories are ready; onResume picks it up after the
+     * user selects the directory, and the native side ignores repeat calls.
+     */
+    private fun initMultiplayerIfReady() {
+        if (DirectoryInitialization.areCitraDirectoriesReady()) {
+            NativeLibrary.initMultiplayer()
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         RefreshRateUtil.enforceRefreshRate(this)
 
@@ -108,7 +122,7 @@ class MainActivity :
         ThemeUtil.themeChangeListener(this)
         ThemeUtil.setTheme(this)
         super.onCreate(savedInstanceState)
-        NativeLibrary.initMultiplayer()
+        initMultiplayerIfReady()
 
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
@@ -266,6 +280,7 @@ class MainActivity :
     }
 
     override fun onResume() {
+        initMultiplayerIfReady()
         checkUserPermissions()
 
         ThemeUtil.setCorrectTheme(this)
