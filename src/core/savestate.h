@@ -6,6 +6,7 @@
 
 #include <limits>
 #include <string>
+#include <string_view>
 #include <vector>
 #include "common/common_types.h"
 
@@ -69,6 +70,17 @@ enum class AutoSaveResumeStatus {
     Stale,         ///< Predates the previous boot: it was already offered or superseded
     BuildMismatch, ///< Written by an incompatible build; LoadState would refuse it
 };
+
+/**
+ * What this build writes into a state's build-version header field, and what a state must carry
+ * for this build to load it. Upstream puts its release version here, so each release refuses
+ * every earlier state. This fork's builds all report the same (empty) release version so that an
+ * autosave survives a release-candidate upgrade; the field therefore carries a format epoch
+ * instead, bumped whenever serialized layout changes, ours or upstream's. A state from before the
+ * bump is a BuildMismatch: skipped by the autosave offer and refused by LoadState, rather than
+ * deserialized with the wrong layout.
+ */
+std::string_view GetSaveStateFormatVersion();
 
 std::vector<SaveStateInfo> ListSaveStates(u64 program_id, u64 movie_id);
 

@@ -44,6 +44,18 @@ static_assert(sizeof(CSTHeader) == 256, "CSTHeader should be 256 bytes");
 
 constexpr std::array<u8, 4> header_magic_bytes{{'C', 'S', 'T', 0x1B}};
 
+/**
+ * Bump this whenever the serialized layout changes. History:
+ *   "0"      every fork build up to thor-v1-rc7 (BUILD_VERSION's default, never bumped)
+ *   "thor-2" after merging upstream 270c9d523 (2026-10-29): unversioned additions to the GSP, FS,
+ *            HTTP and PTM services, the HLE DSP sleep state, and the new CSND state
+ */
+constexpr std::string_view savestate_format_version = "thor-2";
+
+std::string_view GetSaveStateFormatVersion() {
+    return savestate_format_version;
+}
+
 static std::string GetSaveStatePath(u64 program_id, u64 movie_id, u32 slot) {
     // Generation 0 keeps the bare "autosave" name it has always had, so a state left by a build
     // that knew only one autosave is picked up as the ring's first entry with no migration step.
@@ -91,7 +103,7 @@ static bool ValidateSaveState(const CSTHeader& header, SaveStateInfo& info, u64 
         info.build_name = build_name;
         info.build_version = build_version;
 
-        info.status = Common::g_build_version == info.build_version
+        info.status = savestate_format_version == info.build_version
                           ? SaveStateInfo::ValidationStatus::RevisionMismatch
                           : SaveStateInfo::ValidationStatus::BuildMismatch;
     }
@@ -312,9 +324,8 @@ static CSTHeader MakeHeader(u64 title_id) {
     const std::string build_fullname = Common::g_build_fullname;
     std::memcpy(header.build_name.data(), build_fullname.c_str(),
                 std::min(build_fullname.length(), sizeof(header.build_name) - 1));
-    const std::string build_version = Common::g_build_version;
-    std::memcpy(header.build_version.data(), build_version.c_str(),
-                std::min(build_version.length(), sizeof(header.build_version) - 1));
+    std::memcpy(header.build_version.data(), savestate_format_version.data(),
+                std::min(savestate_format_version.size(), sizeof(header.build_version) - 1));
     return header;
 }
 
