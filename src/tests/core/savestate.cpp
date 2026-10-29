@@ -187,7 +187,7 @@ TEST_CASE("Core::CheckAutoSaveState", "[core][savestate]") {
     }
 
     SECTION("reads the autosave from its own file name and offers it when fresh") {
-        WriteAutoSave(states, last_boot + 5, Common::g_build_version);
+        WriteAutoSave(states, last_boot + 5, Core::GetSaveStateFormatVersion());
         Core::SaveStateInfo info{};
         REQUIRE(Core::CheckAutoSaveState(program_id, movie_id, &info) ==
                 AutoSaveResumeStatus::Resumable);
@@ -196,7 +196,7 @@ TEST_CASE("Core::CheckAutoSaveState", "[core][savestate]") {
     }
 
     SECTION("does not offer an autosave that predates the previous boot") {
-        WriteAutoSave(states, last_boot - 5, Common::g_build_version);
+        WriteAutoSave(states, last_boot - 5, Core::GetSaveStateFormatVersion());
         REQUIRE(Core::CheckAutoSaveState(program_id, movie_id) == AutoSaveResumeStatus::Stale);
     }
 
@@ -210,7 +210,7 @@ TEST_CASE("Core::CheckAutoSaveState", "[core][savestate]") {
     }
 
     SECTION("keeps the autosave out of the user-facing slot list") {
-        WriteAutoSave(states, last_boot + 5, Common::g_build_version);
+        WriteAutoSave(states, last_boot + 5, Core::GetSaveStateFormatVersion());
         REQUIRE(Core::ListSaveStates(program_id, movie_id).empty());
     }
 }
@@ -376,9 +376,9 @@ TEST_CASE("Core::ListAutoSaveStates", "[core][savestate]") {
     }
 
     SECTION("returns every generation on disk, newest first") {
-        WriteAutoSave(states, base + 10, Common::g_build_version, 0);
-        WriteAutoSave(states, base + 90, Common::g_build_version, 1);
-        WriteAutoSave(states, base + 50, Common::g_build_version, 2);
+        WriteAutoSave(states, base + 10, Core::GetSaveStateFormatVersion(), 0);
+        WriteAutoSave(states, base + 90, Core::GetSaveStateFormatVersion(), 1);
+        WriteAutoSave(states, base + 50, Core::GetSaveStateFormatVersion(), 2);
         const auto generations = Core::ListAutoSaveStates(program_id, movie_id);
         REQUIRE(generations.size() == 3);
         REQUIRE(generations[0].slot == Core::AutoSaveStateSlot + 1);
@@ -387,7 +387,7 @@ TEST_CASE("Core::ListAutoSaveStates", "[core][savestate]") {
     }
 
     SECTION("skips a generation whose file is truncated instead of failing the whole listing") {
-        WriteAutoSave(states, base + 10, Common::g_build_version, 0);
+        WriteAutoSave(states, base + 10, Core::GetSaveStateFormatVersion(), 0);
         REQUIRE(FileUtil::WriteStringToFile(true, states.AutoSavePath(1), "not a state") == 11);
         const auto generations = Core::ListAutoSaveStates(program_id, movie_id);
         REQUIRE(generations.size() == 1);
@@ -399,7 +399,7 @@ TEST_CASE("Core::ListAutoSaveStates", "[core][savestate]") {
 
     SECTION("keeps every generation out of the user-facing slot list") {
         for (u32 generation = 0; generation < Core::AutoSaveGenerationCount; ++generation) {
-            WriteAutoSave(states, base + generation, Common::g_build_version, generation);
+            WriteAutoSave(states, base + generation, Core::GetSaveStateFormatVersion(), generation);
         }
         REQUIRE(Core::ListSaveStates(program_id, movie_id).empty());
     }
@@ -414,7 +414,7 @@ TEST_CASE("Core::CheckAutoSaveState rotation", "[core][savestate]") {
 
     SECTION("reads a state left in the single-file layout of an older build") {
         // Exactly what an upgrade finds on disk: one <title>.autosave.cst and nothing else
-        WriteAutoSave(states, last_boot + 5, Common::g_build_version);
+        WriteAutoSave(states, last_boot + 5, Core::GetSaveStateFormatVersion());
         Core::SaveStateInfo info{};
         REQUIRE(Core::CheckAutoSaveState(program_id, movie_id, &info) ==
                 AutoSaveResumeStatus::Resumable);
@@ -426,8 +426,8 @@ TEST_CASE("Core::CheckAutoSaveState rotation", "[core][savestate]") {
     }
 
     SECTION("resumes from a newer generation than the legacy file") {
-        WriteAutoSave(states, last_boot + 5, Common::g_build_version, 0);
-        WriteAutoSave(states, last_boot + 40, Common::g_build_version, 1);
+        WriteAutoSave(states, last_boot + 5, Core::GetSaveStateFormatVersion(), 0);
+        WriteAutoSave(states, last_boot + 40, Core::GetSaveStateFormatVersion(), 1);
         Core::SaveStateInfo info{};
         REQUIRE(Core::CheckAutoSaveState(program_id, movie_id, &info) ==
                 AutoSaveResumeStatus::Resumable);
@@ -436,7 +436,7 @@ TEST_CASE("Core::CheckAutoSaveState rotation", "[core][savestate]") {
 
     SECTION("falls back to a loadable generation when the newest is from another build") {
         WriteAutoSave(states, last_boot + 40, "not-this-build", 1);
-        WriteAutoSave(states, last_boot + 5, Common::g_build_version, 0);
+        WriteAutoSave(states, last_boot + 5, Core::GetSaveStateFormatVersion(), 0);
         Core::SaveStateInfo info{};
         REQUIRE(Core::CheckAutoSaveState(program_id, movie_id, &info) ==
                 AutoSaveResumeStatus::Resumable);
@@ -444,7 +444,7 @@ TEST_CASE("Core::CheckAutoSaveState rotation", "[core][savestate]") {
     }
 
     SECTION("offers a stale state rather than reporting nothing to offer") {
-        WriteAutoSave(states, last_boot - 5, Common::g_build_version, 0);
+        WriteAutoSave(states, last_boot - 5, Core::GetSaveStateFormatVersion(), 0);
         Core::SaveStateInfo info{};
         REQUIRE(Core::CheckAutoSaveState(program_id, movie_id, &info) ==
                 AutoSaveResumeStatus::Stale);
